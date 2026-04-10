@@ -1,0 +1,1130 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cost Listrik Monitor — v3</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://accounts.google.com/gsi/client" async></script>
+<style>
+  :root {
+    --bg:#0d1117;--surface:#161b22;--surface2:#1c2128;--border:#30363d;--border2:#3d444d;
+    --accent:#2563eb;--accent2:#1d4ed8;--gold:#f59e0b;--red:#dc2626;--red-bg:#1f0a0a;
+    --green:#16a34a;--green-bg:#0a1f0d;--text:#e6edf3;--text2:#8b949e;--text3:#6e7681;
+    --mono:'IBM Plex Mono',monospace;--sans:'IBM Plex Sans',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;}
+
+  /* TOPBAR */
+  .topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 1.5rem;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:200;}
+  .topbar-left{display:flex;align-items:center;gap:12px;}
+  .logo-icon{width:32px;height:32px;background:var(--accent);border-radius:6px;display:flex;align-items:center;justify-content:center;}
+  .logo-icon svg{width:18px;height:18px;fill:white;}
+  .topbar-title{font-size:14px;font-weight:600;}
+  .topbar-sub{font-size:11px;color:var(--text3);font-family:var(--mono);}
+  .topbar-right{display:flex;align-items:center;gap:10px;}
+  .clock{font-family:var(--mono);font-size:12px;color:var(--text2);background:var(--surface2);padding:4px 10px;border-radius:4px;border:1px solid var(--border);}
+  .badge-plant{font-size:11px;background:rgba(37,99,235,0.15);color:#93c5fd;padding:3px 10px;border-radius:20px;border:1px solid rgba(37,99,235,0.3);font-family:var(--mono);}
+
+  /* DRIVE STATUS BAR */
+  .drive-bar{background:var(--surface2);border-bottom:1px solid var(--border);padding:7px 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+  .drive-status{display:flex;align-items:center;gap:8px;font-size:12px;}
+  .drive-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+  .drive-dot.offline{background:#6e7681;}
+  .drive-dot.connecting{background:#f59e0b;animation:pulse 1s infinite;}
+  .drive-dot.online{background:#16a34a;}
+  .drive-dot.error{background:#dc2626;}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+  .drive-actions{display:flex;gap:8px;align-items:center;}
+  .btn-drive{height:28px;padding:0 12px;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;border:none;font-family:var(--sans);transition:opacity 0.15s;display:flex;align-items:center;gap:5px;}
+  .btn-drive.login{background:white;color:#1a1a1a;}
+  .btn-drive.login:hover{opacity:0.9;}
+  .btn-drive.save{background:rgba(22,163,74,0.2);color:#86efac;border:1px solid rgba(22,163,74,0.3);}
+  .btn-drive.save:hover{opacity:0.8;}
+  .btn-drive.load{background:rgba(37,99,235,0.2);color:#93c5fd;border:1px solid rgba(37,99,235,0.3);}
+  .btn-drive.load:hover{opacity:0.8;}
+  .btn-drive.logout{background:rgba(220,38,38,0.15);color:#fca5a5;border:1px solid rgba(220,38,38,0.3);}
+  .btn-drive.logout:hover{opacity:0.8;}
+  .drive-msg{font-size:11px;font-family:var(--mono);color:var(--text3);padding:3px 8px;border-radius:4px;}
+  .drive-msg.ok{color:#86efac;background:rgba(22,163,74,0.1);}
+  .drive-msg.err{color:#fca5a5;background:rgba(220,38,38,0.1);}
+  .drive-msg.info{color:#93c5fd;background:rgba(37,99,235,0.1);}
+  .drive-user{font-size:11px;color:var(--text2);font-family:var(--mono);}
+
+  /* CLIENT ID SETUP */
+  .setup-banner{background:rgba(245,158,11,0.08);border-bottom:1px solid rgba(245,158,11,0.25);padding:10px 1.5rem;display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+  .setup-banner p{font-size:12px;color:#fcd34d;}
+  .setup-banner a{color:#93c5fd;text-decoration:underline;}
+  .client-id-input{height:30px;padding:0 10px;background:var(--bg);border:1px solid rgba(245,158,11,0.4);border-radius:5px;color:var(--text);font-family:var(--mono);font-size:11px;width:340px;}
+  .btn-set-client{height:30px;padding:0 12px;background:rgba(245,158,11,0.2);color:#fcd34d;border:1px solid rgba(245,158,11,0.4);border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--sans);}
+
+  /* TABS */
+  .tab-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 1.5rem;display:flex;gap:0;}
+  .tab-btn{background:none;border:none;color:var(--text3);font-size:13px;font-weight:500;font-family:var(--sans);padding:13px 18px;cursor:pointer;border-bottom:2px solid transparent;display:flex;align-items:center;gap:6px;transition:color 0.15s,border-color 0.15s;white-space:nowrap;}
+  .tab-btn:hover{color:var(--text2);}
+  .tab-btn.active{color:var(--accent);border-bottom-color:var(--accent);}
+  .tab-btn svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;}
+
+  /* PAGES */
+  .page{display:none;} .page.active{display:block;}
+  .main{max-width:1100px;margin:0 auto;padding:1.5rem 1.5rem 4rem;}
+  .dash-main{max-width:1200px;margin:0 auto;padding:1.5rem 1.5rem 4rem;}
+
+  /* PAGE HEADER */
+  .page-header{margin-bottom:1.5rem;padding-bottom:1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;}
+  .page-header h1{font-size:20px;font-weight:600;letter-spacing:-0.01em;}
+  .page-header h1 span{color:var(--accent);}
+  .page-header p{font-size:12px;color:var(--text2);margin-top:4px;}
+  .period-badge{font-family:var(--mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);padding:5px 12px;border-radius:6px;color:var(--gold);white-space:nowrap;}
+
+  /* CONFIG */
+  .config-strip{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.875rem 1.25rem;display:flex;gap:1.25rem;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;}
+  .config-strip label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;display:block;margin-bottom:3px;}
+  .config-strip input,.config-strip select{background:var(--surface2);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:13px;height:32px;padding:0 8px;border-radius:5px;width:150px;}
+  .config-strip input:focus,.config-strip select:focus{outline:none;border-color:var(--accent);}
+  .config-note{font-size:10px;color:var(--text3);margin-left:auto;font-family:var(--mono);line-height:1.6;}
+
+  /* INPUT CARD */
+  .input-card{background:var(--surface);border:1px solid var(--accent);border-radius:10px;overflow:hidden;margin-bottom:1.25rem;box-shadow:0 0 0 1px rgba(37,99,235,0.1),0 4px 20px rgba(37,99,235,0.07);}
+  .input-card-header{background:rgba(37,99,235,0.1);border-bottom:1px solid rgba(37,99,235,0.25);padding:9px 1.25rem;display:flex;align-items:center;gap:8px;}
+  .input-card-header span{font-size:13px;font-weight:500;color:#93c5fd;}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);}
+  .input-card-body{padding:1.25rem;}
+  .input-grid{display:grid;grid-template-columns:150px 1fr 1fr 1fr 130px;gap:12px;align-items:end;}
+  .form-group{display:flex;flex-direction:column;gap:4px;}
+  .form-group label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;font-weight:500;}
+  .form-group input,.form-group select{height:40px;padding:0 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-family:var(--mono);font-size:13px;transition:border-color 0.15s;width:100%;}
+  .form-group input:focus,.form-group select:focus{outline:none;border-color:var(--accent);background:#0d1117;}
+  .form-group input.libur-mode{opacity:0.35;pointer-events:none;}
+  select option{background:var(--surface2);}
+  .btn-simpan{height:40px;background:var(--accent);color:white;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;transition:background 0.15s,transform 0.1s;width:100%;}
+  .btn-simpan:hover{background:var(--accent2);}
+  .btn-simpan:active{transform:scale(0.98);}
+
+  /* ALERT */
+  .alert{padding:9px 12px;border-radius:6px;font-size:12px;margin-top:10px;display:none;font-family:var(--mono);}
+  .alert.success{background:var(--green-bg);border:1px solid #166534;color:#86efac;}
+  .alert.error{background:var(--red-bg);border:1px solid #991b1b;color:#fca5a5;}
+
+  /* SUMMARY */
+  .summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:1.25rem;}
+  .sum-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.875rem 1.25rem;}
+  .sum-card .lbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:5px;}
+  .sum-card .val{font-size:18px;font-weight:600;font-family:var(--mono);}
+  .sum-card.accent .val{color:#60a5fa;} .sum-card.gold .val{color:var(--gold);}
+  .sum-card .sub-val{font-size:10px;color:var(--text3);margin-top:2px;font-family:var(--mono);}
+
+  /* TABLE */
+  .table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+  .table-toolbar{padding:9px 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+  .table-toolbar span{font-size:12px;font-weight:500;color:var(--text2);}
+  .btn-export{height:30px;padding:0 12px;background:transparent;border:1px solid var(--border2);border-radius:5px;color:var(--text2);font-size:11px;cursor:pointer;font-family:var(--sans);transition:border-color 0.15s,color 0.15s;display:flex;align-items:center;gap:5px;}
+  .btn-export:hover{border-color:var(--gold);color:var(--gold);}
+  .tbl-scroll{overflow-x:auto;}
+  table{width:100%;border-collapse:collapse;font-size:12px;min-width:700px;}
+  thead th{background:#1c2128;color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;padding:9px 12px;text-align:center;border-bottom:1px solid var(--border);white-space:nowrap;}
+  tbody td{padding:8px 12px;text-align:center;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:12px;color:var(--text);background:var(--surface);}
+  tbody tr:last-child td{border-bottom:none;}
+  tbody tr.libur td{background:var(--red-bg);color:#f87171;}
+  tbody tr.prev-row td{background:rgba(245,158,11,0.07);color:#fcd34d;}
+  tbody tr.normal:nth-child(even) td{background:rgba(255,255,255,0.015);}
+  tbody tr:hover td{background:rgba(37,99,235,0.06) !important;}
+  .badge-libur{background:rgba(220,38,38,0.2);color:#f87171;font-size:10px;padding:2px 8px;border-radius:20px;border:1px solid rgba(220,38,38,0.3);}
+  .badge-awal{background:rgba(245,158,11,0.15);color:#fcd34d;font-size:10px;padding:2px 8px;border-radius:20px;border:1px solid rgba(245,158,11,0.3);}
+  tfoot tr.tot-row td{background:rgba(37,99,235,0.15);color:#93c5fd;font-weight:600;border-top:1px solid rgba(37,99,235,0.3);font-size:12px;padding:9px 12px;}
+  tfoot tr.ppj-row td{background:var(--surface2);color:var(--text2);font-size:12px;padding:7px 12px;border-bottom:1px solid var(--border);}
+  tfoot tr.grand-row td{background:rgba(245,158,11,0.12);color:var(--gold);font-weight:700;font-size:13px;padding:10px 12px;border-top:1px solid rgba(245,158,11,0.3);}
+  .del-btn{background:none;border:none;color:var(--text3);cursor:pointer;font-size:13px;padding:2px 6px;border-radius:4px;transition:color 0.1s,background 0.1s;}
+  .del-btn:hover{color:#f87171;background:rgba(220,38,38,0.1);}
+  .empty-state{text-align:center;padding:2.5rem 1rem;color:var(--text3);}
+  .empty-state .icon{font-size:28px;margin-bottom:8px;opacity:0.4;}
+  .empty-state p{font-size:12px;}
+
+  /* FORMULA */
+  .formula-box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.875rem 1.25rem;margin-top:1.25rem;display:grid;grid-template-columns:1fr 1fr;gap:1rem;}
+  .formula-box h4{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;}
+  .formula-box code{font-family:var(--mono);font-size:10px;color:#93c5fd;display:block;line-height:1.8;}
+  .formula-box .info{font-size:11px;color:var(--text3);line-height:1.7;}
+
+  /* DASHBOARD */
+  .dash-header{margin-bottom:1.5rem;display:flex;align-items:flex-start;justify-content:space-between;padding-bottom:1.25rem;border-bottom:1px solid var(--border);}
+  .dash-header h1{font-size:20px;font-weight:600;} .dash-header h1 span{color:var(--gold);}
+  .dash-header p{font-size:12px;color:var(--text2);margin-top:4px;}
+  .kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1.25rem;}
+  .kpi-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1.125rem;position:relative;overflow:hidden;}
+  .kpi-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--kpi-color,var(--accent));}
+  .kpi-card .kpi-icon{font-size:20px;margin-bottom:6px;}
+  .kpi-card .kpi-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:5px;}
+  .kpi-card .kpi-val{font-size:20px;font-weight:700;font-family:var(--mono);}
+  .kpi-card .kpi-sub{font-size:10px;color:var(--text3);margin-top:3px;font-family:var(--mono);}
+  .kpi-card.blue{--kpi-color:#2563eb;} .kpi-card.blue .kpi-val{color:#60a5fa;}
+  .kpi-card.gold{--kpi-color:#f59e0b;} .kpi-card.gold .kpi-val{color:var(--gold);}
+  .kpi-card.green{--kpi-color:#16a34a;} .kpi-card.green .kpi-val{color:#86efac;}
+  .kpi-card.red{--kpi-color:#dc2626;} .kpi-card.red .kpi-val{color:#f87171;}
+  .charts-grid{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:1.25rem;}
+  .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;}
+  .chart-card-header{padding:10px 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+  .chart-card-header h3{font-size:13px;font-weight:600;}
+  .chart-card-header span{font-size:10px;color:var(--text3);font-family:var(--mono);}
+  .chart-body{padding:1rem;}
+  .bar-chart-wrap{position:relative;height:180px;display:flex;align-items:flex-end;gap:3px;padding-bottom:22px;}
+  .bar-col{flex:1;display:flex;flex-direction:column;align-items:center;position:relative;}
+  .bar{border-radius:3px 3px 0 0;width:100%;min-height:2px;transition:height 0.5s cubic-bezier(0.34,1.56,0.64,1);}
+  .bar:hover{opacity:0.8;}
+  .bar-label{position:absolute;bottom:-20px;font-size:8px;color:var(--text3);font-family:var(--mono);text-align:center;white-space:nowrap;}
+  .donut-wrap{display:flex;align-items:center;justify-content:center;gap:20px;}
+  .donut-legend{display:flex;flex-direction:column;gap:8px;}
+  .legend-item{display:flex;align-items:center;gap:8px;}
+  .legend-dot{width:9px;height:9px;border-radius:2px;flex-shrink:0;}
+  .legend-label{font-size:11px;color:var(--text2);}
+  .legend-val{font-size:12px;font-weight:600;font-family:var(--mono);}
+  .dash-table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:1.25rem;}
+  .dash-table-header{padding:10px 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+  .dash-table-header h3{font-size:13px;font-weight:600;}
+  .dash-tbl{width:100%;border-collapse:collapse;}
+  .dash-tbl thead th{background:var(--surface2);padding:8px 14px;font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;text-align:left;}
+  .dash-tbl tbody td{padding:9px 14px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:12px;}
+  .dash-tbl tbody tr:last-child td{border-bottom:none;}
+  .dash-tbl tbody tr:hover td{background:rgba(37,99,235,0.04);}
+  .trend-bar-wrap{display:flex;align-items:center;gap:7px;}
+  .trend-bar-bg{flex:1;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden;}
+  .trend-bar-fill{height:100%;border-radius:3px;transition:width 0.6s ease;}
+  .status-dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:4px;}
+  .alert-box{background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:.875rem 1.25rem;margin-bottom:1.25rem;}
+  .alert-box h4{font-size:12px;color:var(--gold);margin-bottom:6px;}
+  .alert-box ul{font-size:11px;color:var(--text2);list-style:none;display:flex;flex-direction:column;gap:4px;}
+  .alert-box ul li::before{content:"⚠ ";color:var(--gold);}
+
+  /* DRIVE PAGE */
+  .drive-page-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:1.25rem;}
+  .drive-page-header{background:rgba(22,163,74,0.08);border-bottom:1px solid rgba(22,163,74,0.2);padding:10px 1.25rem;display:flex;align-items:center;gap:8px;}
+  .drive-page-header span{font-size:13px;font-weight:500;color:#86efac;}
+  .drive-page-body{padding:1.25rem;}
+  .drive-step{display:flex;gap:14px;padding:10px 0;border-bottom:1px solid var(--border);}
+  .drive-step:last-child{border-bottom:none;}
+  .step-num{width:26px;height:26px;border-radius:50%;background:var(--accent);color:white;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;}
+  .step-content h5{font-size:13px;font-weight:600;margin-bottom:4px;}
+  .step-content p{font-size:12px;color:var(--text3);line-height:1.6;}
+  .step-content a{color:#60a5fa;text-decoration:underline;}
+  .step-input-row{display:flex;gap:8px;margin-top:8px;}
+  .step-text-input{flex:1;height:34px;padding:0 10px;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:11px;}
+  .step-text-input:focus{outline:none;border-color:var(--accent);}
+  .btn-step{height:34px;padding:0 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none;font-family:var(--sans);}
+  .btn-step.green{background:#166534;color:#86efac;}
+  .btn-step.blue{background:rgba(37,99,235,0.2);color:#93c5fd;border:1px solid rgba(37,99,235,0.3);}
+  .step-status{font-size:11px;font-family:var(--mono);color:var(--text3);margin-top:6px;}
+  .step-status.ok{color:#86efac;} .step-status.err{color:#fca5a5;}
+  .data-summary-box{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-family:var(--mono);font-size:11px;color:var(--text2);line-height:1.9;white-space:pre-wrap;}
+
+  /* METER INPUT ROWS */
+  .meter-input-row{display:grid;grid-template-columns:130px 1fr 180px;gap:16px;align-items:center;background:var(--surface2);border:1px solid var(--border2);border-radius:10px;padding:12px 16px;}
+  .meter-label-col{display:flex;flex-direction:column;gap:4px;}
+  .meter-badge{display:inline-block;font-size:13px;font-weight:700;font-family:var(--mono);padding:4px 12px;border-radius:6px;background:rgba(37,99,235,0.15);color:#93c5fd;border:1px solid rgba(37,99,235,0.3);text-align:center;}
+  .meter-device{font-size:10px;color:var(--text3);font-family:var(--mono);text-align:center;}
+  .meter-field-col{display:flex;flex-direction:column;gap:5px;}
+  .meter-field-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;font-weight:500;}
+  .meter-input-group{display:flex;gap:0;border:1px solid var(--border2);border-radius:8px;overflow:hidden;background:var(--bg);}
+  .meter-raw-input{flex:1;height:44px;padding:0 14px;background:transparent;border:none;color:var(--text);font-family:var(--mono);font-size:18px;font-weight:600;outline:none;min-width:0;}
+  .meter-raw-input:focus{background:rgba(37,99,235,0.05);}
+  .meter-raw-input::placeholder{font-size:14px;font-weight:400;color:var(--text3);}
+  .meter-unit-select{height:44px;padding:0 10px;background:var(--surface2);border:none;border-left:1px solid var(--border2);color:var(--gold);font-family:var(--mono);font-size:13px;font-weight:600;cursor:pointer;outline:none;min-width:72px;}
+  .meter-unit-select:focus{background:var(--surface);}
+  .meter-input-group:focus-within{border-color:var(--accent);box-shadow:0 0 0 1px rgba(37,99,235,0.2);}
+  .meter-preview-col{display:flex;flex-direction:column;gap:4px;text-align:right;}
+  .meter-preview-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;}
+  .meter-preview-val{font-size:16px;font-weight:700;font-family:var(--mono);color:#86efac;min-height:24px;}
+  .meter-raw-input.libur-disabled{opacity:0.3;pointer-events:none;}
+  .meter-unit-select.libur-disabled{opacity:0.3;pointer-events:none;}
+
+  @media(max-width:768px){
+    .meter-input-row{grid-template-columns:1fr;gap:10px;}
+    .meter-preview-col{text-align:left;}
+    .input-grid{grid-template-columns:1fr 1fr;}
+    .summary-grid,.kpi-grid{grid-template-columns:1fr 1fr;}
+    .charts-grid{grid-template-columns:1fr;}
+    .page-header,.dash-header{flex-direction:column;gap:8px;}
+    .formula-box{grid-template-columns:1fr;}
+    .config-strip{flex-direction:column;align-items:flex-start;gap:10px;}
+    .config-note{margin-left:0;}
+    .tab-btn{padding:12px 12px;font-size:12px;}
+    .drive-bar{gap:8px;}
+  }
+  @keyframes fadeIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+  .animate{animation:fadeIn 0.2s ease forwards;}
+</style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="logo-icon"><svg viewBox="0 0 24 24"><path d="M13 3L4 14h8l-1 7 9-11h-8z"/></svg></div>
+    <div>
+      <div class="topbar-title">Cost Listrik Monitor</div>
+      <div class="topbar-sub">DPF.3 & Boiler Sitong.2</div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="badge-plant">ZOZEN / ALSTOM</div>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+</div>
+
+<!-- SETUP BANNER (hidden when client ID is set) -->
+<div class="setup-banner" id="setup-banner">
+  <div style="flex:1">
+    <p>⚙️ <strong>Setup Google Drive:</strong> Masukkan Google OAuth Client ID Anda untuk mengaktifkan penyimpanan ke Drive.
+    <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Buat di Google Cloud Console →</a>
+    (pastikan aktifkan Google Drive API & tambahkan domain ini ke Authorized JS origins)</p>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
+    <input type="text" class="client-id-input" id="client-id-input" placeholder="xxxx.apps.googleusercontent.com">
+    <button class="btn-set-client" onclick="setClientId()">Simpan & Aktifkan</button>
+  </div>
+</div>
+
+<!-- DRIVE STATUS BAR -->
+<div class="drive-bar">
+  <div class="drive-status">
+    <div class="drive-dot offline" id="drive-dot"></div>
+    <span id="drive-status-text">Belum login ke Google Drive</span>
+    <span class="drive-user" id="drive-user-label"></span>
+  </div>
+  <div class="drive-actions" id="drive-actions">
+    <button class="btn-drive login" id="btn-login" onclick="driveLogin()" style="display:none">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M15.5 8.5C15.5 10.43 13.93 12 12 12C10.07 12 8.5 10.43 8.5 8.5C8.5 6.57 10.07 5 12 5C13.93 5 15.5 6.57 15.5 8.5Z" fill="#4285F4"/><path d="M3 19C3 15.69 7.03 13 12 13C16.97 13 21 15.69 21 19" stroke="#4285F4" stroke-width="2"/></svg>
+      Login Google
+    </button>
+    <button class="btn-drive save" id="btn-save" onclick="driveSave()" style="display:none">
+      ☁ Simpan ke Drive
+    </button>
+    <button class="btn-drive load" id="btn-load" onclick="driveLoad()" style="display:none">
+      ↓ Muat dari Drive
+    </button>
+    <button class="btn-drive logout" id="btn-logout" onclick="driveLogout()" style="display:none">
+      Logout
+    </button>
+    <span class="drive-msg" id="drive-msg"></span>
+  </div>
+</div>
+
+<!-- TABS -->
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('input')" id="tab-input">
+    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>Input Data
+  </button>
+  <button class="tab-btn" onclick="switchTab('dashboard')" id="tab-dashboard">
+    <svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>Dashboard Manajer
+  </button>
+  <button class="tab-btn" onclick="switchTab('drive')" id="tab-drive">
+    <svg viewBox="0 0 24 24"><path d="M22 12l-5-8.66H7L2 12l5 8.66h10L22 12z"/></svg>Google Drive
+  </button>
+</div>
+
+<!-- PAGE: INPUT -->
+<div class="page active" id="page-input">
+<div class="main">
+  <div class="page-header">
+    <div><h1>Laporan <span>Cost Listrik</span></h1><p>Input stand meter harian — hitung otomatis WBP, LWBP, total biaya</p></div>
+    <div class="period-badge" id="period-badge">—</div>
+  </div>
+  <div class="config-strip">
+    <div><label>Periode</label><input type="month" id="cfg-month" value="2026-04"></div>
+    <div><label>Tarif / kWh (Rp)</label><input type="number" id="cfg-rate" value="1035.78" step="0.01"></div>
+    <div><label>PPJ (%)</label><input type="number" id="cfg-ppj" value="3" step="0.1" style="width:80px"></div>
+    <div><label>Lokasi</label><input type="text" id="cfg-loc" value="UNGARAN" style="width:120px;font-family:var(--sans)"></div>
+    <div class="config-note">WBP = 4/24 × 1,5 × tarif × kWh/hari<br>LWBP = 20/24 × tarif × kWh/hari</div>
+  </div>
+  <div class="input-card">
+    <div class="input-card-header"><div class="dot"></div><span>Input Data Harian Operator</span></div>
+    <div class="input-card-body">
+      <!-- ROW 1: Tanggal + Status + Tombol -->
+      <div style="display:grid;grid-template-columns:160px 1fr 140px;gap:12px;align-items:end;margin-bottom:12px">
+        <div class="form-group"><label>Tanggal</label><input type="date" id="inp-date"></div>
+        <div class="form-group"><label>Status Produksi</label>
+          <select id="inp-status" onchange="toggleLibur()">
+            <option value="normal">Produksi Normal</option>
+            <option value="libur">Libur / Off</option>
+          </select>
+        </div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn-simpan" onclick="addRow()">Simpan Data</button></div>
+      </div>
+      <!-- ROW 2: MDP 13 -->
+      <div class="meter-input-row" id="meter-row-13">
+        <div class="meter-label-col">
+          <div class="meter-badge">MDP 13</div>
+          <div class="meter-device">Schneider PM5300</div>
+        </div>
+        <div class="meter-field-col">
+          <label class="meter-field-label">Angka E Del di layar meter</label>
+          <div class="meter-input-group">
+            <input type="number" id="inp-m13-raw" placeholder="10.275" step="0.001" class="meter-raw-input libur-mode-target">
+            <select id="inp-m13-unit" class="meter-unit-select libur-mode-target" onchange="updatePreview('13')">
+              <option value="GWh">GWh</option>
+              <option value="MWh">MWh</option>
+              <option value="kWh">kWh</option>
+            </select>
+          </div>
+        </div>
+        <div class="meter-preview-col">
+          <div class="meter-preview-label">= kWh tersimpan</div>
+          <div class="meter-preview-val" id="preview-m13">—</div>
+        </div>
+      </div>
+      <!-- ROW 3: MDP 16 -->
+      <div class="meter-input-row" id="meter-row-16" style="margin-top:10px">
+        <div class="meter-label-col">
+          <div class="meter-badge" style="background:rgba(245,158,11,0.15);color:#fcd34d;border-color:rgba(245,158,11,0.3)">MDP 16</div>
+          <div class="meter-device">Schneider PM5300</div>
+        </div>
+        <div class="meter-field-col">
+          <label class="meter-field-label">Angka E Del di layar meter</label>
+          <div class="meter-input-group">
+            <input type="number" id="inp-m16-raw" placeholder="2.181" step="0.001" class="meter-raw-input libur-mode-target">
+            <select id="inp-m16-unit" class="meter-unit-select libur-mode-target" onchange="updatePreview('16')">
+              <option value="GWh">GWh</option>
+              <option value="MWh">MWh</option>
+              <option value="kWh">kWh</option>
+            </select>
+          </div>
+        </div>
+        <div class="meter-preview-col">
+          <div class="meter-preview-label">= kWh tersimpan</div>
+          <div class="meter-preview-val" id="preview-m16">—</div>
+        </div>
+      </div>
+      <div class="alert" id="alert-msg"></div>
+    </div>
+  </div>
+  <div class="summary-grid">
+    <div class="sum-card accent"><div class="lbl">Total kWh / Bulan</div><div class="val" id="s-kwh">—</div><div class="sub-val" id="s-days">0 hari produksi</div></div>
+    <div class="sum-card"><div class="lbl">Total WBP</div><div class="val" id="s-wbp">—</div><div class="sub-val">18:00–22:00</div></div>
+    <div class="sum-card"><div class="lbl">Total LWBP</div><div class="val" id="s-lwbp">—</div><div class="sub-val">00:00–18:00 &amp; 22:00+</div></div>
+    <div class="sum-card gold"><div class="lbl">Grand Total + PPJ</div><div class="val" id="s-grand">—</div><div class="sub-val" id="s-ppj-amt">PPJ —</div></div>
+  </div>
+  <div class="table-wrap">
+    <div class="table-toolbar">
+      <span id="tbl-label">Data Bulan Ini — 0 Entri</span>
+      <div style="display:flex;gap:6px">
+        <button class="btn-export" onclick="exportCSV()">⬇ CSV</button>
+        <button class="btn-export" onclick="window.print()" style="border-color:rgba(37,99,235,0.4);color:#60a5fa">🖨 Print</button>
+      </div>
+    </div>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>No</th><th>Tanggal</th><th>MDP 13</th><th>MDP 16</th><th>kWh Total</th><th>kWh/Day</th><th>WBP (Rp)</th><th>LWBP (Rp)</th><th>Cost (Rp)</th><th></th></tr></thead>
+        <tbody id="tbl-body"><tr><td colspan="10"><div class="empty-state"><div class="icon">⚡</div><p>Belum ada data. Mulai input stand meter hari ini.</p></div></td></tr></tbody>
+        <tfoot id="tbl-foot"></tfoot>
+      </table>
+    </div>
+  </div>
+  <div class="formula-box">
+    <div><h4>Formula</h4><code>WBP  = 4/24 × 1,5 × tarif × kWh/hari<br>LWBP = 20/24 × tarif × kWh/hari<br>PPJ  = Cost Total × PPJ%<br>Grand Total = Cost + PPJ</code></div>
+    <div><h4>Keterangan</h4><p class="info">Stand meter dibaca tiap hari pukul 08:00 WIB.<br>kWh/hari = stand hari ini − stand hari kemarin.<br>Data pertama = <strong>stand awal bulan</strong>.<br>Hari libur tidak dihitung biaya.</p></div>
+  </div>
+</div>
+</div>
+
+<!-- PAGE: DASHBOARD -->
+<div class="page" id="page-dashboard">
+<div class="dash-main">
+  <div class="dash-header">
+    <div><h1>Dashboard <span>Manajer</span></h1><p>Ringkasan visual cost listrik — update otomatis dari data input</p></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <div class="period-badge" id="dash-period">—</div>
+      <button class="btn-export" onclick="window.print()" style="border-color:rgba(37,99,235,0.4);color:#60a5fa;height:34px">🖨 Print</button>
+    </div>
+  </div>
+  <div class="alert-box" id="dash-alerts" style="display:none"><h4>⚠ Perhatian Manajer</h4><ul id="dash-alerts-list"></ul></div>
+  <div class="alert-box" id="dash-ok" style="display:none;background:rgba(22,163,74,0.08);border-color:rgba(22,163,74,0.3)"><h4 style="color:#86efac">✓ Semua Normal</h4><p style="font-size:11px;color:var(--text3);font-family:var(--mono)">Tidak ada anomali terdeteksi.</p></div>
+  <div class="kpi-grid">
+    <div class="kpi-card blue"><div class="kpi-icon">⚡</div><div class="kpi-label">Total kWh Bulan Ini</div><div class="kpi-val" id="d-kwh">—</div><div class="kpi-sub" id="d-kwh-sub">0 hari produksi</div></div>
+    <div class="kpi-card gold"><div class="kpi-icon">💰</div><div class="kpi-label">Grand Total + PPJ</div><div class="kpi-val" id="d-grand">—</div><div class="kpi-sub" id="d-ppj-sub">PPJ —</div></div>
+    <div class="kpi-card green"><div class="kpi-icon">📅</div><div class="kpi-label">Rata-rata kWh / Hari</div><div class="kpi-val" id="d-avg-kwh">—</div><div class="kpi-sub">per hari produksi</div></div>
+    <div class="kpi-card red"><div class="kpi-icon">📈</div><div class="kpi-label">Rata-rata Cost / Hari</div><div class="kpi-val" id="d-avg-cost">—</div><div class="kpi-sub">per hari produksi</div></div>
+  </div>
+  <div class="charts-grid">
+    <div class="chart-card">
+      <div class="chart-card-header"><h3>⚡ kWh per Hari</h3><span id="d-bar-period">—</span></div>
+      <div class="chart-body"><div class="bar-chart-wrap" id="bar-chart"><div class="empty-state" style="flex:1"><p>Belum ada data</p></div></div></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-card-header"><h3>🔌 Komposisi Biaya</h3><span>WBP vs LWBP</span></div>
+      <div class="chart-body"><div class="donut-wrap" id="donut-wrap"><div class="empty-state"><p>Belum ada data</p></div></div></div>
+    </div>
+  </div>
+  <div class="dash-table-wrap">
+    <div class="dash-table-header"><h3>📋 Rincian Harian</h3><span style="font-size:10px;color:var(--text3);font-family:var(--mono)" id="d-tbl-label">—</span></div>
+    <div style="overflow-x:auto">
+      <table class="dash-tbl">
+        <thead><tr><th>Tgl</th><th>Status</th><th>kWh/Hari</th><th>Distribusi</th><th style="text-align:right">WBP (Rp)</th><th style="text-align:right">LWBP (Rp)</th><th style="text-align:right">Cost (Rp)</th></tr></thead>
+        <tbody id="d-tbl-body"><tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text3);font-size:12px">Belum ada data.</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- PAGE: DRIVE -->
+<div class="page" id="page-drive">
+<div class="main">
+  <div class="page-header">
+    <div><h1>Google <span>Drive</span> Storage</h1><p>Data tersimpan otomatis di Google Drive Anda — aman, bisa diakses dari HP manapun</p></div>
+    <div class="period-badge" id="drive-period">—</div>
+  </div>
+
+  <!-- STEP 1: CLIENT ID -->
+  <div class="drive-page-card">
+    <div class="drive-page-header"><span>⚙️ Konfigurasi</span></div>
+    <div class="drive-page-body">
+      <div class="drive-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <h5>Buat Google OAuth Client ID</h5>
+          <p>Buka <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a> → Buat project → Aktifkan <strong>Google Drive API</strong> → Buat OAuth 2.0 Client ID (Web Application) → Tambahkan URL file ini ke <em>Authorized JavaScript origins</em>.</p>
+          <div class="step-input-row">
+            <input type="text" class="step-text-input" id="cfg-client-id" placeholder="xxxx.apps.googleusercontent.com" value="">
+            <button class="btn-step green" onclick="setClientId()">Simpan</button>
+          </div>
+          <div class="step-status" id="client-id-status"></div>
+        </div>
+      </div>
+      <div class="drive-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <h5>Login ke Google</h5>
+          <p>Setelah Client ID tersimpan, klik tombol Login di bawah. Izinkan akses ke Google Drive.</p>
+          <div class="step-input-row">
+            <button class="btn-step green" onclick="driveLogin()" id="btn-login-page">Login Google</button>
+            <button class="btn-step blue" onclick="driveLogout()" id="btn-logout-page" style="display:none">Logout</button>
+          </div>
+          <div class="step-status" id="login-status"></div>
+        </div>
+      </div>
+      <div class="drive-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <h5>Simpan & Muat Data</h5>
+          <p>Data disimpan sebagai file <code style="color:#93c5fd;font-size:11px">cost_listrik_data.json</code> di root Google Drive Anda. Bisa dibuka dari HP iPhone, Android, atau komputer manapun.</p>
+          <div class="step-input-row">
+            <button class="btn-step green" onclick="driveSave()" id="btn-save-page">☁ Simpan ke Drive</button>
+            <button class="btn-step blue" onclick="driveLoad()" id="btn-load-page">↓ Muat dari Drive</button>
+          </div>
+          <div class="step-status" id="save-load-status"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DATA SUMMARY -->
+  <div class="drive-page-card">
+    <div class="drive-page-header"><span>📊 Status Data Lokal</span></div>
+    <div class="drive-page-body">
+      <div class="data-summary-box" id="drive-data-summary">Belum ada data diinput.</div>
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn-step green" onclick="exportCSV()">⬇ Download CSV</button>
+        <button class="btn-step blue" onclick="exportJSON()">⬇ Backup JSON</button>
+        <button class="btn-step" style="background:rgba(220,38,38,0.15);color:#fca5a5;border:1px solid rgba(220,38,38,0.3)" onclick="importJSON()">↑ Restore dari JSON</button>
+        <input type="file" id="import-file" accept=".json" style="display:none" onchange="doImport(event)">
+      </div>
+    </div>
+  </div>
+
+  <!-- INFO -->
+  <div class="formula-box">
+    <div>
+      <h4>Cara Kerja Penyimpanan</h4>
+      <p class="info">
+        • Data disimpan sebagai <strong>file JSON</strong> di Google Drive Anda<br>
+        • Nama file: <code style="color:#93c5fd;font-size:10px">cost_listrik_data.json</code><br>
+        • Buka aplikasi dari HP → Login → klik <strong>Muat dari Drive</strong><br>
+        • Data bulan lama tersimpan aman, tidak tertimpa<br>
+        • Setelah input data baru, klik <strong>Simpan ke Drive</strong>
+      </p>
+    </div>
+    <div>
+      <h4>Tips Akses dari HP</h4>
+      <p class="info">
+        <strong>iPhone Safari:</strong> Buka file → Share → Add to Home Screen<br>
+        <strong>Android Chrome:</strong> Buka file → ⋮ → Add to Home Screen<br>
+        Jadi shortcut di layar utama seperti aplikasi.<br>
+        <strong>Penting:</strong> File harus dihost di web server / GitHub Pages / Google Sites agar OAuth berfungsi di HP.
+      </p>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<script>
+// ============================================================
+// STATE
+// ============================================================
+let rows = [];
+let driveAccessToken = null;
+let driveFileId = null;
+let driveUserEmail = '';
+let clientId = localStorage.getItem('cl_client_id') || '';
+const DRIVE_FILE_NAME = 'cost_listrik_data.json';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
+const fmt = n => Math.round(n).toLocaleString('id-ID');
+const fmtShort = n => { if(n>=1000000) return (n/1e6).toFixed(1)+'jt'; if(n>=1000) return (n/1e3).toFixed(0)+'rb'; return Math.round(n).toString(); };
+const getRate = () => parseFloat(document.getElementById('cfg-rate').value)||1035.78;
+const getPPJ  = () => parseFloat(document.getElementById('cfg-ppj').value)/100||0.03;
+
+// Clock
+function updateClock(){ document.getElementById('clock').textContent = new Date().toLocaleTimeString('id-ID',{hour12:false}); }
+setInterval(updateClock,1000); updateClock();
+
+// Init
+document.getElementById('inp-date').value = new Date().toISOString().split('T')[0];
+['cfg-month','cfg-rate','cfg-ppj','cfg-loc'].forEach(id=>
+  document.getElementById(id).addEventListener('input',()=>{render();updateDriveSummary();}));
+
+// Restore clientId
+if(clientId){ applyClientId(clientId); }
+
+// ============================================================
+// TABS
+// ============================================================
+function switchTab(tab){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('page-'+tab).classList.add('active');
+  document.getElementById('tab-'+tab).classList.add('active');
+  if(tab==='dashboard') renderDashboard();
+  if(tab==='drive'){ updateDriveSummary(); syncDrivePageButtons(); }
+}
+
+// ============================================================
+// CLIENT ID SETUP
+// ============================================================
+function setClientId(){
+  const val = (document.getElementById('client-id-input').value||document.getElementById('cfg-client-id').value||'').trim();
+  if(!val){ alert('Masukkan Client ID terlebih dahulu.'); return; }
+  clientId = val;
+  localStorage.setItem('cl_client_id', clientId);
+  applyClientId(clientId);
+  document.getElementById('client-id-status').textContent = '✓ Client ID tersimpan: '+clientId.substring(0,30)+'...';
+  document.getElementById('client-id-status').className = 'step-status ok';
+}
+
+function applyClientId(id){
+  // hide setup banner
+  document.getElementById('setup-banner').style.display = 'none';
+  // show login button
+  document.getElementById('btn-login').style.display = 'flex';
+  if(document.getElementById('cfg-client-id')) document.getElementById('cfg-client-id').value = id;
+  if(document.getElementById('client-id-input')) document.getElementById('client-id-input').value = id;
+}
+
+// ============================================================
+// GOOGLE DRIVE AUTH (Token-based via GIS)
+// ============================================================
+let tokenClient = null;
+
+function driveLogin(){
+  if(!clientId){ alert('Masukkan Google Client ID dulu di tab Google Drive.'); switchTab('drive'); return; }
+  setDriveStatus('connecting','Menghubungkan ke Google...');
+  if(!tokenClient){
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: DRIVE_SCOPE,
+      callback: onTokenReceived,
+    });
+  }
+  tokenClient.requestAccessToken();
+}
+
+function onTokenReceived(response){
+  if(response.error){ setDriveStatus('error','Login gagal: '+response.error); return; }
+  driveAccessToken = response.access_token;
+  // Get user info
+  fetch('https://www.googleapis.com/oauth2/v3/userinfo',{headers:{Authorization:'Bearer '+driveAccessToken}})
+    .then(r=>r.json()).then(info=>{
+      driveUserEmail = info.email||'';
+      setDriveStatus('online','Terhubung ke Google Drive');
+      document.getElementById('drive-user-label').textContent = driveUserEmail ? '('+driveUserEmail+')' : '';
+      document.getElementById('btn-login').style.display='none';
+      document.getElementById('btn-save').style.display='flex';
+      document.getElementById('btn-load').style.display='flex';
+      document.getElementById('btn-logout').style.display='flex';
+      document.getElementById('btn-login-page').style.display='none';
+      document.getElementById('btn-logout-page').style.display='inline-flex';
+      document.getElementById('login-status').textContent='✓ Login berhasil: '+driveUserEmail;
+      document.getElementById('login-status').className='step-status ok';
+      showDriveMsg('✓ Login berhasil!','ok');
+      // Auto-load
+      driveLoad(true);
+    }).catch(()=>{
+      setDriveStatus('online','Terhubung ke Google Drive');
+      document.getElementById('btn-login').style.display='none';
+      document.getElementById('btn-save').style.display='flex';
+      document.getElementById('btn-load').style.display='flex';
+      document.getElementById('btn-logout').style.display='flex';
+      showDriveMsg('✓ Login berhasil!','ok');
+      driveLoad(true);
+    });
+}
+
+function driveLogout(){
+  if(driveAccessToken) google.accounts.oauth2.revoke(driveAccessToken);
+  driveAccessToken=null; driveFileId=null; driveUserEmail='';
+  setDriveStatus('offline','Belum login ke Google Drive');
+  document.getElementById('drive-user-label').textContent='';
+  document.getElementById('btn-login').style.display='flex';
+  document.getElementById('btn-save').style.display='none';
+  document.getElementById('btn-load').style.display='none';
+  document.getElementById('btn-logout').style.display='none';
+  document.getElementById('btn-login-page').style.display='inline-flex';
+  document.getElementById('btn-logout-page').style.display='none';
+  document.getElementById('login-status').textContent='Sudah logout.';
+  document.getElementById('login-status').className='step-status';
+  showDriveMsg('Logout berhasil.','');
+}
+
+function setDriveStatus(state, text){
+  const dot=document.getElementById('drive-dot');
+  dot.className='drive-dot '+state;
+  document.getElementById('drive-status-text').textContent=text;
+}
+
+function showDriveMsg(msg, type){
+  const el=document.getElementById('drive-msg');
+  el.textContent=msg; el.className='drive-msg '+(type||'');
+  if(type==='ok') setTimeout(()=>{el.textContent='';el.className='drive-msg';},4000);
+}
+
+function syncDrivePageButtons(){
+  const loggedIn = !!driveAccessToken;
+  document.getElementById('btn-login-page').style.display = loggedIn?'none':'inline-flex';
+  document.getElementById('btn-logout-page').style.display = loggedIn?'inline-flex':'none';
+}
+
+// ============================================================
+// DRIVE SAVE
+// ============================================================
+async function driveSave(){
+  if(!driveAccessToken){ alert('Login ke Google Drive dulu.'); return; }
+  setDriveSaveStatus('Menyimpan ke Drive...','');
+  const config = {
+    month: document.getElementById('cfg-month').value,
+    rate: document.getElementById('cfg-rate').value,
+    ppj: document.getElementById('cfg-ppj').value,
+    loc: document.getElementById('cfg-loc').value,
+  };
+  const payload = JSON.stringify({ rows, config, savedAt: new Date().toISOString() });
+  try {
+    if(driveFileId){
+      // Update existing
+      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=media`,{
+        method:'PATCH', headers:{Authorization:'Bearer '+driveAccessToken,'Content-Type':'application/json'},
+        body:payload
+      });
+    } else {
+      // Search for existing file first
+      const search = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FILE_NAME}'+and+trashed=false`,
+        {headers:{Authorization:'Bearer '+driveAccessToken}});
+      const searchData = await search.json();
+      if(searchData.files && searchData.files.length>0){
+        driveFileId = searchData.files[0].id;
+        await fetch(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=media`,{
+          method:'PATCH', headers:{Authorization:'Bearer '+driveAccessToken,'Content-Type':'application/json'},
+          body:payload
+        });
+      } else {
+        // Create new
+        const meta = await fetch('https://www.googleapis.com/drive/v3/files',{
+          method:'POST', headers:{Authorization:'Bearer '+driveAccessToken,'Content-Type':'application/json'},
+          body:JSON.stringify({name:DRIVE_FILE_NAME,mimeType:'application/json'})
+        });
+        const metaData = await meta.json();
+        driveFileId = metaData.id;
+        await fetch(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=media`,{
+          method:'PATCH', headers:{Authorization:'Bearer '+driveAccessToken,'Content-Type':'application/json'},
+          body:payload
+        });
+      }
+    }
+    const now = new Date().toLocaleTimeString('id-ID',{hour12:false});
+    setDriveSaveStatus(`✓ Tersimpan ke Drive — ${now}`,'ok');
+    showDriveMsg('✓ Data tersimpan ke Drive!','ok');
+  } catch(e){
+    setDriveSaveStatus('⚠ Gagal simpan: '+e.message,'err');
+    showDriveMsg('⚠ Gagal simpan ke Drive','err');
+  }
+}
+
+// ============================================================
+// DRIVE LOAD
+// ============================================================
+async function driveLoad(silent=false){
+  if(!driveAccessToken){ if(!silent) alert('Login ke Google Drive dulu.'); return; }
+  if(!silent) setDriveSaveStatus('Memuat dari Drive...','');
+  try {
+    const search = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FILE_NAME}'+and+trashed=false`,
+      {headers:{Authorization:'Bearer '+driveAccessToken}});
+    const searchData = await search.json();
+    if(!searchData.files || searchData.files.length===0){
+      if(!silent) setDriveSaveStatus('File belum ada di Drive. Simpan data dulu.','');
+      return;
+    }
+    driveFileId = searchData.files[0].id;
+    const fileRes = await fetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`,
+      {headers:{Authorization:'Bearer '+driveAccessToken}});
+    const data = await fileRes.json();
+    rows = data.rows || [];
+    if(data.config){
+      if(data.config.month) document.getElementById('cfg-month').value=data.config.month;
+      if(data.config.rate)  document.getElementById('cfg-rate').value=data.config.rate;
+      if(data.config.ppj)   document.getElementById('cfg-ppj').value=data.config.ppj;
+      if(data.config.loc)   document.getElementById('cfg-loc').value=data.config.loc;
+    }
+    render(); updateDriveSummary();
+    const saved = data.savedAt ? new Date(data.savedAt).toLocaleString('id-ID') : '';
+    const msg = `✓ ${rows.length} entri dimuat dari Drive${saved?' (disimpan '+saved+')':''}`;
+    if(!silent) setDriveSaveStatus(msg,'ok');
+    showDriveMsg('✓ Data dimuat dari Drive!','ok');
+    showAlert('✓ '+rows.length+' data berhasil dimuat dari Google Drive.','success');
+  } catch(e){
+    if(!silent) setDriveSaveStatus('⚠ Gagal muat: '+e.message,'err');
+  }
+}
+
+function setDriveSaveStatus(msg, type){
+  const el = document.getElementById('save-load-status');
+  el.textContent=msg; el.className='step-status '+(type||'');
+}
+
+// ============================================================
+// HELPERS
+// ============================================================
+function toKwh(val, unit){
+  if(isNaN(val)) return NaN;
+  if(unit==='GWh') return val * 1e6;
+  if(unit==='MWh') return val * 1e3;
+  return val; // kWh
+}
+
+function updatePreview(mdp){
+  const raw = parseFloat(document.getElementById('inp-m'+mdp+'-raw').value);
+  const unit = document.getElementById('inp-m'+mdp+'-unit').value;
+  const el = document.getElementById('preview-m'+mdp);
+  if(isNaN(raw)){ el.textContent='—'; el.style.color='#86efac'; return; }
+  const kwh = toKwh(raw, unit);
+  el.textContent = fmt(kwh) + ' kWh';
+  el.style.color = '#86efac';
+}
+
+// auto-update preview on typing
+['13','16'].forEach(mdp=>{
+  document.getElementById('inp-m'+mdp+'-raw').addEventListener('input', ()=>updatePreview(mdp));
+});
+
+function toggleLibur(){
+  const isLibur=document.getElementById('inp-status').value==='libur';
+  ['inp-m13-raw','inp-m16-raw','inp-m13-unit','inp-m16-unit'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(isLibur){ el.classList.add('libur-disabled'); el.value = el.tagName==='SELECT'?el.value:''; }
+    else { el.classList.remove('libur-disabled'); }
+  });
+  if(isLibur){
+    document.getElementById('preview-m13').textContent='—';
+    document.getElementById('preview-m16').textContent='—';
+  }
+}
+
+function showAlert(msg,type){
+  const el=document.getElementById('alert-msg');
+  el.textContent=msg; el.className='alert '+type; el.style.display='block';
+  setTimeout(()=>{el.style.display='none';},3500);
+}
+
+function getBulanLabel(){
+  const v=document.getElementById('cfg-month').value; if(!v) return '';
+  const[y,m]=v.split('-');
+  return new Date(y,m-1,1).toLocaleString('id-ID',{month:'long'}).toUpperCase()+' '+y;
+}
+
+function computeRows(){
+  const rate=getRate();
+  return rows.map((r,i)=>{
+    const isFirst=i===0;
+    const totalMeter=(r.m13||0)+(r.m16||0);
+    let dayKwh=0,wbp=0,lwbp=0,cost=0;
+    if(r.status==='normal'&&!isFirst){
+      const prev=(rows[i-1].m13||0)+(rows[i-1].m16||0);
+      dayKwh=Math.max(0,totalMeter-prev);
+      wbp=(4/24)*1.5*rate*dayKwh;
+      lwbp=(20/24)*rate*dayKwh;
+      cost=wbp+lwbp;
+    }
+    return{...r,isFirst,totalMeter,dayKwh,wbp,lwbp,cost};
+  });
+}
+
+// ============================================================
+// RENDER INPUT
+// ============================================================
+function render(){
+  const bulan=getBulanLabel();
+  document.getElementById('period-badge').textContent=bulan||'—';
+  const tbody=document.getElementById('tbl-body');
+  const tfoot=document.getElementById('tbl-foot');
+  const ppjPct=getPPJ();
+  if(!rows.length){
+    tbody.innerHTML='<tr><td colspan="10"><div class="empty-state"><div class="icon">⚡</div><p>Belum ada data. Mulai input stand meter hari ini.</p></div></td></tr>';
+    tfoot.innerHTML='';
+    document.getElementById('tbl-label').textContent='Data Bulan Ini — 0 Entri';
+    ['s-kwh','s-wbp','s-lwbp','s-grand'].forEach(id=>document.getElementById(id).textContent='—');
+    document.getElementById('s-days').textContent='0 hari produksi';
+    document.getElementById('s-ppj-amt').textContent='PPJ —';
+    return;
+  }
+  const computed=computeRows();
+  let html='',totDay=0,totWbp=0,totLwbp=0,totCost=0,prodDays=0,no=0;
+  computed.forEach((r,i)=>{
+    const dStr=new Date(r.date+'T00:00:00').toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'2-digit'});
+    if(r.status==='normal'&&!r.isFirst){if(r.dayKwh>0)prodDays++;totDay+=r.dayKwh;totWbp+=r.wbp;totLwbp+=r.lwbp;totCost+=r.cost;}
+    if(r.isFirst){
+      html+=`<tr class="prev-row animate"><td>—</td><td>${dStr}</td><td>${fmt(r.m13)}</td><td>${fmt(r.m16)}</td><td>${fmt(r.totalMeter)}</td><td colspan="4"><span class="badge-awal">Stand Awal Bulan</span></td><td><button class="del-btn" onclick="delRow(${i})">✕</button></td></tr>`;
+    }else if(r.status==='libur'){
+      html+=`<tr class="libur animate"><td>${++no}</td><td>${dStr}</td><td colspan="2"><span class="badge-libur">LIBUR/OFF</span></td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td><button class="del-btn" onclick="delRow(${i})">✕</button></td></tr>`;
+    }else{
+      html+=`<tr class="normal animate"><td>${++no}</td><td>${dStr}</td><td>${fmt(r.m13)}</td><td>${fmt(r.m16)}</td><td>${fmt(r.totalMeter)}</td><td style="color:#60a5fa;font-weight:500">${fmt(r.dayKwh)}</td><td>${fmt(r.wbp)}</td><td>${fmt(r.lwbp)}</td><td style="font-weight:600">${fmt(r.cost)}</td><td><button class="del-btn" onclick="delRow(${i})">✕</button></td></tr>`;
+    }
+  });
+  tbody.innerHTML=html;
+  const ppjAmt=totCost*ppjPct, grand=totCost+ppjAmt;
+  tfoot.innerHTML=`<tr class="tot-row"><td colspan="5" style="text-align:left;padding-left:16px">TOTAL</td><td>${fmt(totDay)}</td><td>${fmt(totWbp)}</td><td>${fmt(totLwbp)}</td><td>${fmt(totCost)}</td><td></td></tr>
+    <tr class="ppj-row"><td colspan="8" style="text-align:right;padding-right:16px">PPJ ${(ppjPct*100).toFixed(0)}%</td><td style="color:#fcd34d;font-weight:600">${fmt(ppjAmt)}</td><td></td></tr>
+    <tr class="grand-row"><td colspan="8" style="text-align:left;padding-left:16px">GRAND TOTAL</td><td>Rp ${fmt(grand)}</td><td></td></tr>`;
+  document.getElementById('tbl-label').textContent=`Data ${bulan} — ${rows.length} Entri`;
+  document.getElementById('s-kwh').textContent=fmt(totDay)+' kWh';
+  document.getElementById('s-days').textContent=prodDays+' hari produksi';
+  document.getElementById('s-wbp').textContent='Rp '+fmt(totWbp);
+  document.getElementById('s-lwbp').textContent='Rp '+fmt(totLwbp);
+  document.getElementById('s-grand').textContent='Rp '+fmt(grand);
+  document.getElementById('s-ppj-amt').textContent='PPJ Rp '+fmt(ppjAmt);
+}
+
+function addRow(){
+  const date=document.getElementById('inp-date').value;
+  const status=document.getElementById('inp-status').value;
+  const raw13=parseFloat(document.getElementById('inp-m13-raw').value);
+  const raw16=parseFloat(document.getElementById('inp-m16-raw').value);
+  const unit13=document.getElementById('inp-m13-unit').value;
+  const unit16=document.getElementById('inp-m16-unit').value;
+  const m13=toKwh(raw13, unit13);
+  const m16=toKwh(raw16, unit16);
+  if(!date){showAlert('⚠ Pilih tanggal.','error');return;}
+  if(status==='normal'&&(isNaN(m13)||isNaN(m16))){showAlert('⚠ Masukkan angka E Del untuk MDP 13 dan MDP 16.','error');return;}
+  const entry={date,status,m13:isNaN(m13)?0:m13,m16:isNaN(m16)?0:m16};
+  const idx=rows.findIndex(r=>r.date===date);
+  if(idx>=0){rows[idx]=entry;showAlert('✓ Data '+date+' diperbarui.','success');}
+  else{rows.push(entry);showAlert('✓ Data tersimpan. MDP13='+fmt(entry.m13)+' kWh, MDP16='+fmt(entry.m16)+' kWh','success');}
+  rows.sort((a,b)=>a.date.localeCompare(b.date));
+  document.getElementById('inp-m13-raw').value='';
+  document.getElementById('inp-m16-raw').value='';
+  document.getElementById('preview-m13').textContent='—';
+  document.getElementById('preview-m16').textContent='—';
+  document.getElementById('inp-status').value='normal';
+  toggleLibur();
+  const nd=new Date(date+'T00:00:00'); nd.setDate(nd.getDate()+1);
+  document.getElementById('inp-date').value=nd.toISOString().split('T')[0];
+  render(); updateDriveSummary();
+  if(driveAccessToken) driveSave();
+}
+
+function delRow(i){
+  if(!confirm('Hapus data tanggal '+rows[i].date+'?')) return;
+  rows.splice(i,1); render(); updateDriveSummary();
+  if(driveAccessToken) driveSave();
+}
+
+// ============================================================
+// DASHBOARD
+// ============================================================
+function renderDashboard(){
+  const bulan=getBulanLabel();
+  document.getElementById('dash-period').textContent=bulan||'—';
+  document.getElementById('d-bar-period').textContent=bulan;
+  if(!rows.length){
+    ['d-kwh','d-grand','d-avg-kwh','d-avg-cost'].forEach(id=>document.getElementById(id).textContent='—');
+    document.getElementById('d-kwh-sub').textContent='0 hari produksi';
+    document.getElementById('d-ppj-sub').textContent='PPJ —';
+    document.getElementById('d-tbl-label').textContent='0 entri';
+    document.getElementById('bar-chart').innerHTML='<div class="empty-state" style="flex:1"><p>Belum ada data</p></div>';
+    document.getElementById('donut-wrap').innerHTML='<div class="empty-state"><p>Belum ada data</p></div>';
+    document.getElementById('d-tbl-body').innerHTML='<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text3)">Belum ada data.</td></tr>';
+    document.getElementById('dash-alerts').style.display='none';
+    document.getElementById('dash-ok').style.display='none';
+    return;
+  }
+  const computed=computeRows(); const ppjPct=getPPJ();
+  let totKwh=0,totWbp=0,totLwbp=0,totCost=0,prodDays=0; const prodRows=[];
+  computed.forEach(r=>{if(!r.isFirst&&r.status==='normal'&&r.dayKwh>0){totKwh+=r.dayKwh;totWbp+=r.wbp;totLwbp+=r.lwbp;totCost+=r.cost;prodDays++;prodRows.push(r);}});
+  const ppjAmt=totCost*ppjPct,grand=totCost+ppjAmt,avgKwh=prodDays?totKwh/prodDays:0,avgCost=prodDays?totCost/prodDays:0;
+  document.getElementById('d-kwh').textContent=fmt(totKwh)+' kWh';
+  document.getElementById('d-kwh-sub').textContent=prodDays+' hari produksi';
+  document.getElementById('d-grand').textContent='Rp '+fmt(grand);
+  document.getElementById('d-ppj-sub').textContent='PPJ Rp '+fmt(ppjAmt);
+  document.getElementById('d-avg-kwh').textContent=fmt(avgKwh)+' kWh';
+  document.getElementById('d-avg-cost').textContent='Rp '+fmtShort(avgCost);
+  document.getElementById('d-tbl-label').textContent=computed.length+' entri';
+  renderBarChart(prodRows,avgKwh);
+  renderDonut(totWbp,totLwbp);
+  renderDailyTable(computed,avgKwh);
+  renderAlerts(prodRows,avgKwh);
+}
+
+function renderBarChart(prodRows,avgKwh){
+  const el=document.getElementById('bar-chart');
+  if(!prodRows.length){el.innerHTML='<div class="empty-state" style="flex:1"><p>Belum ada data produksi</p></div>';return;}
+  const maxKwh=Math.max(...prodRows.map(r=>r.dayKwh));
+  const yMax=Math.ceil(maxKwh/1000)*1000||1000;
+  let barsHtml='';
+  prodRows.forEach(r=>{
+    const pct=Math.max(2,(r.dayKwh/yMax)*100);
+    const lbl=new Date(r.date+'T00:00:00').toLocaleDateString('id-ID',{day:'2-digit',month:'short'});
+    const color=r.dayKwh>avgKwh*1.2?'#f59e0b':r.dayKwh<avgKwh*0.8?'#60a5fa':'#2563eb';
+    barsHtml+=`<div class="bar-col" title="${lbl}: ${fmt(r.dayKwh)} kWh"><div class="bar" style="height:${pct}%;background:${color}"></div><span class="bar-label">${lbl}</span></div>`;
+  });
+  el.innerHTML=`<div style="width:40px;height:calc(100%-22px);display:flex;flex-direction:column;justify-content:space-between;flex-shrink:0;margin-bottom:22px">
+    ${[yMax,Math.round(yMax*.75),Math.round(yMax*.5),Math.round(yMax*.25),0].map(v=>`<div style="font-size:8px;color:var(--text3);font-family:var(--mono);text-align:right">${fmtShort(v)}</div>`).join('')}
+  </div><div style="flex:1;display:flex;align-items:flex-end;gap:2px;padding-bottom:22px;overflow-x:auto">${barsHtml}</div>`;
+}
+
+function renderDonut(wbp,lwbp){
+  const el=document.getElementById('donut-wrap');
+  if(!wbp&&!lwbp){el.innerHTML='<div class="empty-state"><p>Belum ada data</p></div>';return;}
+  const total=wbp+lwbp,wbpPct=(wbp/total)*100,lwbpPct=(lwbp/total)*100;
+  const r=38,cx=50,cy=50,circ=2*Math.PI*r;
+  const w=wbpPct/100*circ,l=lwbpPct/100*circ;
+  el.innerHTML=`<svg width="100" height="100" viewBox="0 0 100 100">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#1c2128" stroke-width="14"/>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#f59e0b" stroke-width="14" stroke-dasharray="${w} ${circ-w}" stroke-dashoffset="${circ*.25}" stroke-linecap="round"/>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#2563eb" stroke-width="14" stroke-dasharray="${l} ${circ-l}" stroke-dashoffset="${circ*.25-w}" stroke-linecap="round"/>
+    <text x="50" y="47" text-anchor="middle" fill="#e6edf3" font-size="7" font-family="IBM Plex Mono">Total</text>
+    <text x="50" y="57" text-anchor="middle" fill="#e6edf3" font-size="7" font-family="IBM Plex Mono">Rp ${fmtShort(total)}</text>
+  </svg>
+  <div class="donut-legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div><div><div class="legend-label">WBP ${wbpPct.toFixed(1)}%</div><div class="legend-val" style="color:#fcd34d">Rp ${fmt(wbp)}</div></div></div>
+    <div class="legend-item"><div class="legend-dot" style="background:#2563eb"></div><div><div class="legend-label">LWBP ${lwbpPct.toFixed(1)}%</div><div class="legend-val" style="color:#60a5fa">Rp ${fmt(lwbp)}</div></div></div>
+  </div>`;
+}
+
+function renderDailyTable(computed,avgKwh){
+  const tbody=document.getElementById('d-tbl-body');
+  const maxKwh=Math.max(...computed.map(r=>r.dayKwh));
+  let html='';
+  computed.forEach(r=>{
+    const dStr=new Date(r.date+'T00:00:00').toLocaleDateString('id-ID',{day:'2-digit',month:'short'});
+    if(r.isFirst){
+      html+=`<tr><td style="color:#fcd34d;font-family:var(--mono)">${dStr}</td><td colspan="6"><span class="badge-awal">Stand Awal — ${fmt(r.totalMeter)} kWh</span></td></tr>`;
+    }else if(r.status==='libur'){
+      html+=`<tr><td style="font-family:var(--mono);color:var(--text3)">${dStr}</td><td><span class="badge-libur">LIBUR</span></td><td colspan="5" style="color:var(--text3)">—</td></tr>`;
+    }else{
+      const pct=maxKwh?(r.dayKwh/maxKwh)*100:0;
+      const isHigh=avgKwh&&r.dayKwh>avgKwh*1.2,isLow=avgKwh&&r.dayKwh<avgKwh*0.8&&r.dayKwh>0;
+      const barColor=isHigh?'#f59e0b':isLow?'#60a5fa':'#2563eb';
+      const sdot=isHigh?`<span class="status-dot" style="background:#f59e0b"></span>Tinggi`:isLow?`<span class="status-dot" style="background:#60a5fa"></span>Rendah`:`<span class="status-dot" style="background:#16a34a"></span>Normal`;
+      html+=`<tr><td style="font-family:var(--mono)">${dStr}</td><td style="font-size:11px">${sdot}</td><td style="color:#60a5fa;font-family:var(--mono)">${fmt(r.dayKwh)}</td>
+        <td><div class="trend-bar-wrap"><div class="trend-bar-bg"><div class="trend-bar-fill" style="width:${pct}%;background:${barColor}"></div></div><span style="font-size:9px;color:var(--text3);font-family:var(--mono)">${pct.toFixed(0)}%</span></div></td>
+        <td style="text-align:right;font-family:var(--mono)">${fmt(r.wbp)}</td><td style="text-align:right;font-family:var(--mono)">${fmt(r.lwbp)}</td><td style="text-align:right;font-family:var(--mono);font-weight:600">${fmt(r.cost)}</td></tr>`;
+    }
+  });
+  tbody.innerHTML=html;
+}
+
+function renderAlerts(prodRows,avgKwh){
+  const alertsEl=document.getElementById('dash-alerts'),okEl=document.getElementById('dash-ok');
+  const listEl=document.getElementById('dash-alerts-list');
+  const alerts=[];
+  prodRows.forEach(r=>{
+    const dStr=new Date(r.date+'T00:00:00').toLocaleDateString('id-ID',{day:'2-digit',month:'short'});
+    if(avgKwh&&r.dayKwh>avgKwh*1.3) alerts.push(`${dStr}: kWh tinggi (${fmt(r.dayKwh)} — +${((r.dayKwh/avgKwh-1)*100).toFixed(0)}% rata-rata)`);
+    if(avgKwh&&r.dayKwh<avgKwh*0.6&&r.dayKwh>0) alerts.push(`${dStr}: kWh rendah (${fmt(r.dayKwh)} — mungkin gangguan)`);
+  });
+  if(alerts.length){listEl.innerHTML=alerts.map(a=>`<li>${a}</li>`).join('');alertsEl.style.display='block';okEl.style.display='none';}
+  else if(prodRows.length>0){alertsEl.style.display='none';okEl.style.display='block';}
+  else{alertsEl.style.display='none';okEl.style.display='none';}
+}
+
+// ============================================================
+// DRIVE SUMMARY & EXPORT
+// ============================================================
+function updateDriveSummary(){
+  const el=document.getElementById('drive-data-summary');
+  const bp=document.getElementById('drive-period');
+  const bulan=getBulanLabel();
+  if(bp) bp.textContent=bulan||'—';
+  if(!rows.length){el.textContent='Belum ada data diinput.';return;}
+  const computed=computeRows();
+  let totKwh=0,totCost=0,prodDays=0;
+  computed.forEach(r=>{if(!r.isFirst&&r.status==='normal'&&r.dayKwh>0){totKwh+=r.dayKwh;totCost+=r.cost;prodDays++;}});
+  const ppjAmt=totCost*getPPJ();
+  const savedAt = driveFileId ? ' (tersimpan di Drive)' : ' (belum disimpan ke Drive)';
+  el.textContent=`Periode     : ${bulan}\nEntri       : ${rows.length} baris\nProduksi    : ${prodDays} hari\nTotal kWh   : ${fmt(totKwh)} kWh\nGrand Total : Rp ${fmt(totCost+ppjAmt)}\nDrive       :${savedAt}`;
+}
+
+function buildCSV(sep){
+  const computed=computeRows();
+  let csv=['No','Tanggal','MDP 13','MDP 16','kWh Total','kWh/Hari','WBP (Rp)','LWBP (Rp)','Cost (Rp)','Status'].join(sep)+'\n';
+  let totDay=0,totWbp=0,totLwbp=0,totCost=0,no=0;
+  computed.forEach(r=>{
+    const s=r.isFirst?'Stand Awal':r.status==='libur'?'LIBUR':'Normal';
+    const n=r.isFirst?'Awal':r.status==='libur'?'L':String(++no);
+    if(!r.isFirst&&r.status==='normal'){totDay+=r.dayKwh;totWbp+=r.wbp;totLwbp+=r.lwbp;totCost+=r.cost;}
+    csv+=[n,r.date,r.m13||0,r.m16||0,r.totalMeter,Math.round(r.dayKwh),Math.round(r.wbp),Math.round(r.lwbp),Math.round(r.cost),s].join(sep)+'\n';
+  });
+  const ppj=totCost*getPPJ();
+  csv+='\n'+['TOTAL','','','','',Math.round(totDay),Math.round(totWbp),Math.round(totLwbp),Math.round(totCost),''].join(sep)+'\n';
+  csv+=['PPJ','','','','','','','',Math.round(ppj),''].join(sep)+'\n';
+  csv+=['GRAND TOTAL','','','','','','','',Math.round(totCost+ppj),''].join(sep)+'\n';
+  return csv;
+}
+
+function exportCSV(){
+  if(!rows.length){alert('Tidak ada data.');return;}
+  const blob=new Blob(['\uFEFF'+buildCSV(',')],{type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`Cost_Listrik_${getBulanLabel().replace(' ','_')}.csv`;a.click();
+}
+
+function exportJSON(){
+  if(!rows.length){alert('Tidak ada data.');return;}
+  const config={month:document.getElementById('cfg-month').value,rate:document.getElementById('cfg-rate').value,ppj:document.getElementById('cfg-ppj').value,loc:document.getElementById('cfg-loc').value};
+  const blob=new Blob([JSON.stringify({rows,config,exportedAt:new Date().toISOString()},null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`cost_listrik_backup_${getBulanLabel().replace(' ','_')}.json`;a.click();
+}
+
+function importJSON(){ document.getElementById('import-file').click(); }
+
+function doImport(e){
+  const file=e.target.files[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    try{
+      const data=JSON.parse(ev.target.result);
+      rows=data.rows||[];
+      if(data.config){
+        if(data.config.month) document.getElementById('cfg-month').value=data.config.month;
+        if(data.config.rate)  document.getElementById('cfg-rate').value=data.config.rate;
+        if(data.config.ppj)   document.getElementById('cfg-ppj').value=data.config.ppj;
+        if(data.config.loc)   document.getElementById('cfg-loc').value=data.config.loc;
+      }
+      render(); updateDriveSummary();
+      alert('✓ '+rows.length+' data berhasil diimport dari file JSON.');
+    }catch{alert('File JSON tidak valid.');}
+  };
+  reader.readAsText(file);
+  e.target.value='';
+}
+
+// Init
+render();
+</script>
+</body>
+</html>
