@@ -19,6 +19,7 @@ Usage:
     sig = compute_signals(df, ihsg_df)
 """
 
+import os
 import logging
 from datetime import date, datetime
 from typing import Optional, List, Tuple
@@ -39,13 +40,18 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 def get_db_engine(
-    host: str = 'localhost',
-    port: int = 5432,
-    dbname: str = 'pixellent_db',
-    user: str = 'pixellent',
-    password: str = 'pixellent',
+    host: str = None,
+    port: int = None,
+    dbname: str = None,
+    user: str = None,
+    password: str = None,
 ) -> Engine:
-    """Create SQLAlchemy engine for PostgreSQL."""
+    """Create SQLAlchemy engine for PostgreSQL. Uses env vars as defaults."""
+    host = host or os.environ.get('PIXELLENT_DB_HOST', 'localhost')
+    port = port or int(os.environ.get('PIXELLENT_DB_PORT', '5432'))
+    dbname = dbname or os.environ.get('PIXELLENT_DB_NAME', 'pixellent_db')
+    user = user or os.environ.get('PIXELLENT_DB_USER', 'pixellent')
+    password = password or os.environ.get('PIXELLENT_DB_PASSWORD', 'pixellent')
     url = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
     return create_engine(url, pool_size=5, max_overflow=10)
 

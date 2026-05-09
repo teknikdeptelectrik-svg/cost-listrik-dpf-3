@@ -297,24 +297,25 @@ def foreign_flow_momentum(foreign_buy: pd.Series, foreign_sell: pd.Series,
 
 def foreign_flow_streak(foreign_buy: pd.Series, foreign_sell: pd.Series) -> pd.Series:
     """
-    Consecutive days of net buy/sell by foreigners.
+    Consecutive days of net buy/sell by foreigners — VECTORIZED.
     Positive = N days consecutive net buy
     Negative = N days consecutive net sell
     """
     net = foreign_buy - foreign_sell
-    is_buy = net > 0
+    sign = np.sign(net.values)
+    result = np.zeros(len(sign), dtype=int)
+    if len(sign) == 0:
+        return pd.Series(result, index=net.index)
     
-    result = pd.Series(0, index=net.index)
-    streak = 0
-    for i in range(len(net)):
-        if is_buy.iloc[i]:
-            streak = max(streak, 0) + 1
-        elif net.iloc[i] < 0:
-            streak = min(streak, 0) - 1
+    result[0] = sign[0]
+    for i in range(1, len(sign)):
+        if sign[i] == 0:
+            result[i] = 0
+        elif sign[i] == sign[i-1] or (sign[i] != 0 and result[i-1] == 0):
+            result[i] = result[i-1] + sign[i]
         else:
-            streak = 0
-        result.iloc[i] = streak
-    return result
+            result[i] = sign[i]
+    return pd.Series(result, index=net.index)
 
 
 def foreign_flow_score(foreign_buy: pd.Series, foreign_sell: pd.Series,
@@ -436,16 +437,20 @@ def smart_money_score(
         weights['sm_orderbook'] = 0.0  # No weight if no data
     
     # ── Normalize weights ──
-    total_weight = sum(weights.values())
-    if total_weight > 0:
-        norm_weights = {k: v / total_weight for k, v in weights.items()}
-    else:
-        norm_weights = {k: 0.25 for k in weights}
+    # Fix #8: Use FIXED weights regardless of data availability.
+    # Missing data gets neutral score (50), maintaining score comparability.
+    # This ensures scores are always comparable across different data contexts.
+    fixed_weights = {
+        'sm_volume': 0.25,
+        'sm_accumulation': 0.30,
+        'sm_foreign': 0.25,
+        'sm_orderbook': 0.20,
+    }
     
-    # ── Composite Score ──
+    # ── Composite Score (always using fixed weights) ──
     composite = pd.Series(0, index=close.index, dtype=float)
-    for key, score in scores.items():
-        composite += score * norm_weights.get(key, 0)
+    for key, weight in fixed_weights.items():
+        composite += scores[key] * weight
     
     scores['sm_score'] = composite.clip(0, 100)
     

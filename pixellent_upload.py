@@ -64,11 +64,11 @@ st.markdown("""
 with st.sidebar:
     st.markdown("### ⚙️ Database Connection")
 
-    db_host = st.text_input("Host", value="localhost")
-    db_port = st.number_input("Port", value=5432, min_value=1, max_value=65535)
-    db_name = st.text_input("Database", value="pixellent_db")
-    db_user = st.text_input("User", value="pixellent")
-    db_pass = st.text_input("Password", value="pixellent", type="password")
+    db_host = st.text_input("Host", value=os.environ.get('PIXELLENT_DB_HOST', 'localhost'))
+    db_port = st.number_input("Port", value=int(os.environ.get('PIXELLENT_DB_PORT', '5432')), min_value=1, max_value=65535)
+    db_name = st.text_input("Database", value=os.environ.get('PIXELLENT_DB_NAME', 'pixellent_db'))
+    db_user = st.text_input("User", value=os.environ.get('PIXELLENT_DB_USER', ''))
+    db_pass = st.text_input("Password", value=os.environ.get('PIXELLENT_DB_PASSWORD', ''), type="password")
 
     st.markdown("---")
     st.markdown("### 📋 Upload Settings")

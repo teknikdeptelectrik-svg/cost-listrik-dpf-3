@@ -362,13 +362,18 @@ def parse_idx_excel(
 # ============================================================================
 
 def get_db_engine(
-    host: str = 'localhost',
-    port: int = 5432,
-    dbname: str = 'pixellent_db',
-    user: str = 'pixellent',
-    password: str = 'pixellent',
+    host: str = None,
+    port: int = None,
+    dbname: str = None,
+    user: str = None,
+    password: str = None,
 ) -> Engine:
-    """Create SQLAlchemy engine for PostgreSQL."""
+    """Create SQLAlchemy engine for PostgreSQL. Uses env vars as defaults."""
+    host = host or os.environ.get('PIXELLENT_DB_HOST', 'localhost')
+    port = port or int(os.environ.get('PIXELLENT_DB_PORT', '5432'))
+    dbname = dbname or os.environ.get('PIXELLENT_DB_NAME', 'pixellent_db')
+    user = user or os.environ.get('PIXELLENT_DB_USER', 'pixellent')
+    password = password or os.environ.get('PIXELLENT_DB_PASSWORD', 'pixellent')
     url = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
     return create_engine(url, pool_size=5, max_overflow=10)
 
@@ -437,19 +442,8 @@ def ingest_file(
     # ── Add batch_id ──
     df['upload_batch_id'] = batch_id
 
-    # ── Handle existing data ──
-    if replace_existing:
-        try:
-            with engine.begin() as conn:
-                deleted = conn.execute(
-                    text("DELETE FROM raw_daily_data WHERE trade_date = :d"),
-                    {'d': trade_date}
-                )
-                if deleted.rowcount > 0:
-                    logger.info(f"Replaced {deleted.rowcount} existing rows for {trade_date}")
-        except Exception as e:
-            logger.warning(f"Could not delete existing data: {e}")
-    else:
+    # ── Handle existing data & Insert (ATOMIC — Fix #1 & #6) ──
+    if not replace_existing:
         # Check if data already exists
         try:
             with engine.connect() as conn:
@@ -466,23 +460,35 @@ def ingest_file(
         except Exception as e:
             pass  # Table might not exist yet
 
-    # ── Insert to database ──
+    # ── Atomic upsert: DELETE + INSERT in single transaction ──
     try:
-        inserted = df.to_sql(
-            'raw_daily_data',
-            engine,
-            if_exists='append',
-            index=False,
-            method='multi',
-            chunksize=500,
-        )
+        with engine.begin() as conn:
+            # Delete existing data for this date (within same transaction)
+            if replace_existing:
+                deleted = conn.execute(
+                    text("DELETE FROM raw_daily_data WHERE trade_date = :d"),
+                    {'d': trade_date}
+                )
+                if deleted.rowcount > 0:
+                    logger.info(f"Replacing {deleted.rowcount} existing rows for {trade_date}")
+
+            # Insert new data (within same transaction — atomic with delete)
+            df.to_sql(
+                'raw_daily_data',
+                conn,
+                if_exists='append',
+                index=False,
+                method='multi',
+                chunksize=200,
+            )
         result['inserted'] = len(df)
         result['status'] = 'success'
-        logger.info(f"Inserted {len(df)} rows for {trade_date}")
+        logger.info(f"Inserted {len(df)} rows for {trade_date} (atomic)")
     except Exception as e:
+        # If anything fails, the entire transaction is rolled back (no data loss)
         result['errors'].append(f"Database insert error: {str(e)}")
         result['status'] = 'failed'
-        logger.error(f"Insert failed: {e}")
+        logger.error(f"Atomic insert failed (rolled back): {e}")
 
     # ── Update upload log ──
     _update_upload_log(engine, batch_id, result, start_time)
