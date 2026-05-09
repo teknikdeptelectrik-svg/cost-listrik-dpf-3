@@ -25,5 +25,12 @@ plotly>=5.18.0           # Interactive charts
 # --- Technical Analysis (existing) ---
 yfinance>=0.2.30         # Fallback data source (existing code)
 
+# --- Phase 3: AI Scoring & ML ---
+xgboost>=2.0.0           # Gradient boosting (primary ML model)
+scikit-learn>=1.3.0      # Cross-validation, calibration, metrics
+joblib>=1.3.0            # Model serialization
+shap>=0.43.0             # Feature explainability (optional)
+optuna>=3.4.0            # Hyperparameter tuning (optional, Phase 3+)
+
 # --- Utilities ---
 python-dateutil>=2.8.0   # Date parsing
