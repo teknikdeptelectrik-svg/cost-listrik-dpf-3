@@ -674,7 +674,380 @@ def compute_global_correlation(
 
 
 # =============================================================================
-# 5. MAIN — TEST
+# 5. AUTO-FETCH & CACHING FUNCTIONS
+# =============================================================================
+
+import json
+import os
+
+# Optional dependencies for auto-fetch
+try:
+    import yfinance as yf
+    HAS_YFINANCE = True
+except ImportError:
+    HAS_YFINANCE = False
+    logger.warning("yfinance not installed. Auto macro fetch disabled.")
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
+    logger.warning("requests not installed. BI Rate scraping disabled.")
+
+try:
+    from bs4 import BeautifulSoup
+    HAS_BS4 = True
+except ImportError:
+    HAS_BS4 = False
+    logger.warning("beautifulsoup4 not installed. BI Rate scraping disabled.")
+
+
+# Cache configuration
+MACRO_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+MACRO_CACHE_FILE = os.path.join(MACRO_CACHE_DIR, "macro_cache.json")
+MACRO_CACHE_MAX_AGE_HOURS = 6  # Default: refetch if cache older than 6 hours
+
+# yfinance ticker symbols for auto-fetch
+YFINANCE_SYMBOLS = {
+    "usd_idr": "USDIDR=X",
+    "sp500": "^GSPC",
+    "vix": "^VIX",
+    "gold": "GC=F",
+    "crude_oil": "CL=F",
+}
+
+# Fallback BI Rate (updated periodically when scraping fails)
+FALLBACK_BI_RATE = 6.0  # BI 7-Day Reverse Repo Rate as of mid-2025
+
+
+def _ensure_macro_data_dir() -> None:
+    """Create data/ directory if it doesn't exist."""
+    os.makedirs(MACRO_CACHE_DIR, exist_ok=True)
+
+
+def _read_macro_cache() -> Optional[Dict[str, Any]]:
+    """
+    Read macro cache from disk.
+
+    Returns:
+        Dict with 'timestamp' (ISO str) and macro data, or None if no cache.
+    """
+    try:
+        if not os.path.exists(MACRO_CACHE_FILE):
+            return None
+        with open(MACRO_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data
+    except (json.JSONDecodeError, IOError, OSError) as e:
+        logger.warning(f"Failed to read macro cache: {e}")
+        return None
+
+
+def _write_macro_cache(data: Dict[str, Any]) -> None:
+    """
+    Write macro data to cache file.
+
+    Args:
+        data: Dict with macro indicators to cache
+    """
+    _ensure_macro_data_dir()
+    try:
+        cache_data = {
+            "timestamp": datetime.now().isoformat(),
+            "data": data,
+        }
+        with open(MACRO_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"Macro cache written → {MACRO_CACHE_FILE}")
+    except (IOError, OSError) as e:
+        logger.error(f"Failed to write macro cache: {e}")
+
+
+def _is_macro_cache_valid(
+    cache_data: Dict[str, Any],
+    max_age_hours: float = MACRO_CACHE_MAX_AGE_HOURS,
+) -> bool:
+    """
+    Check if macro cache is still valid (not expired).
+
+    Args:
+        cache_data: The loaded cache dict with 'timestamp' key
+        max_age_hours: Maximum age in hours before cache is stale
+
+    Returns:
+        True if cache is still fresh, False if expired
+    """
+    try:
+        cache_time = datetime.fromisoformat(cache_data["timestamp"])
+        age = datetime.now() - cache_time
+        max_age = timedelta(hours=max_age_hours)
+        return age < max_age
+    except (KeyError, ValueError, TypeError) as e:
+        logger.warning(f"Invalid macro cache timestamp: {e}")
+        return False
+
+
+def _fetch_yfinance_data() -> Dict[str, Optional[float]]:
+    """
+    Fetch market data using yfinance: USD/IDR, S&P500, VIX, Gold, Crude Oil.
+
+    Returns:
+        Dict with fetched values (None for failed fetches)
+    """
+    if not HAS_YFINANCE:
+        logger.warning("yfinance not available. Returning empty data.")
+        return {}
+
+    results = {}
+
+    for key, symbol in YFINANCE_SYMBOLS.items():
+        try:
+            ticker = yf.Ticker(symbol)
+            # Get recent history (2 days to compute change)
+            hist = ticker.history(period="5d")
+
+            if hist.empty:
+                logger.warning(f"No data returned for {symbol}")
+                results[key] = None
+                results[f"{key}_prev"] = None
+                continue
+
+            # Current (most recent close)
+            current = float(hist["Close"].iloc[-1])
+            results[key] = current
+
+            # Previous close (for computing change)
+            if len(hist) >= 2:
+                prev = float(hist["Close"].iloc[-2])
+                results[f"{key}_prev"] = prev
+            else:
+                results[f"{key}_prev"] = current
+
+            logger.info(f"  {key} ({symbol}): {current:.2f}")
+
+        except Exception as e:
+            logger.error(f"Failed to fetch {symbol}: {e}")
+            results[key] = None
+            results[f"{key}_prev"] = None
+
+    # Compute S&P 500 1-month return
+    try:
+        sp_ticker = yf.Ticker("^GSPC")
+        sp_hist = sp_ticker.history(period="1mo")
+        if len(sp_hist) >= 2:
+            sp_1m_return = ((sp_hist["Close"].iloc[-1] / sp_hist["Close"].iloc[0]) - 1) * 100
+            results["sp500_return_1m"] = round(float(sp_1m_return), 2)
+        else:
+            results["sp500_return_1m"] = 0.0
+    except Exception as e:
+        logger.error(f"Failed to compute S&P 1m return: {e}")
+        results["sp500_return_1m"] = 0.0
+
+    return results
+
+
+def _fetch_bi_rate() -> float:
+    """
+    Attempt to fetch the current BI 7-Day Reverse Repo Rate.
+
+    Tries scraping from Bank Indonesia website. Falls back to hardcoded value.
+
+    Returns:
+        BI Rate as float (e.g., 6.0 for 6%)
+    """
+    if not HAS_REQUESTS or not HAS_BS4:
+        logger.info(f"Web scraping deps not available. Using fallback BI Rate: {FALLBACK_BI_RATE}%")
+        return FALLBACK_BI_RATE
+
+    # Try scraping BI website
+    try:
+        url = "https://www.bi.go.id/id/statistik/indikator/bi-rate.aspx"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, "html.parser")
+            # Look for the rate value in the page
+            # BI website structure varies — try common patterns
+            text = soup.get_text()
+            # Pattern: look for percentage near "BI 7-Day" or "BI-Rate"
+            import re
+            patterns = [
+                r'(\d+[.,]\d+)\s*%',  # Any percentage
+                r'BI.*?(\d+[.,]\d+)',  # BI followed by number
+            ]
+            for pattern in patterns:
+                matches = re.findall(pattern, text)
+                for match in matches:
+                    rate = float(match.replace(",", "."))
+                    if 3.0 <= rate <= 12.0:  # Reasonable BI rate range
+                        logger.info(f"Scraped BI Rate: {rate}%")
+                        return rate
+
+        logger.warning("Could not parse BI Rate from website.")
+    except Exception as e:
+        logger.warning(f"Failed to scrape BI Rate: {e}")
+
+    # Fallback
+    logger.info(f"Using fallback BI Rate: {FALLBACK_BI_RATE}%")
+    return FALLBACK_BI_RATE
+
+
+def auto_fetch_macro(
+    max_age_hours: float = MACRO_CACHE_MAX_AGE_HOURS,
+    force_refresh: bool = False,
+) -> MacroContext:
+    """
+    Automatically fetch all macro data and return updated MacroContext.
+
+    Fetches from yfinance (USD/IDR, S&P500, VIX, Gold, Oil) and
+    attempts to scrape BI Rate. Results are cached to avoid repeated API calls.
+
+    Args:
+        max_age_hours: Maximum cache age in hours before refetching (default: 6)
+        force_refresh: If True, ignore cache and always fetch fresh data
+
+    Returns:
+        MacroContext object with updated indicators
+    """
+    _ensure_macro_data_dir()
+    macro = MacroContext()
+
+    # Check cache first (unless force refresh)
+    if not force_refresh:
+        cache_data = _read_macro_cache()
+        if cache_data and _is_macro_cache_valid(cache_data, max_age_hours):
+            logger.info(f"Using cached macro data (cached at {cache_data.get('timestamp', 'unknown')})")
+            cached_indicators = cache_data.get("data", {})
+            macro.update_from_dict(cached_indicators)
+            return macro
+
+    # Fetch fresh data
+    logger.info("Fetching fresh macro data...")
+    fetched_data = {}
+
+    # 1. Fetch yfinance data (USD/IDR, S&P500, VIX, Gold, Oil)
+    logger.info("Fetching market data via yfinance...")
+    yf_data = _fetch_yfinance_data()
+
+    # Map yfinance results to macro indicator names
+    if yf_data.get("usd_idr") is not None:
+        fetched_data["usd_idr"] = yf_data["usd_idr"]
+    if yf_data.get("usd_idr_prev") is not None:
+        fetched_data["usd_idr_prev"] = yf_data["usd_idr_prev"]
+    if yf_data.get("vix") is not None:
+        fetched_data["vix"] = yf_data["vix"]
+    if yf_data.get("gold") is not None:
+        fetched_data["gold"] = yf_data["gold"]
+    if yf_data.get("crude_oil") is not None:
+        fetched_data["crude_oil"] = yf_data["crude_oil"]
+    if yf_data.get("sp500_return_1m") is not None:
+        fetched_data["sp500_return_1m"] = yf_data["sp500_return_1m"]
+
+    # 2. Fetch BI Rate
+    logger.info("Fetching BI Rate...")
+    bi_rate = _fetch_bi_rate()
+    fetched_data["bi_rate"] = bi_rate
+    # Use previous cached value for bi_rate_prev if available
+    prev_cache = _read_macro_cache()
+    if prev_cache and prev_cache.get("data", {}).get("bi_rate") is not None:
+        fetched_data["bi_rate_prev"] = prev_cache["data"]["bi_rate"]
+    else:
+        fetched_data["bi_rate_prev"] = bi_rate
+
+    # 3. If fetch failed entirely, try to use stale cache
+    if not fetched_data or all(v is None for v in fetched_data.values()):
+        logger.warning("All fetches failed. Attempting stale cache fallback...")
+        cache_data = _read_macro_cache()
+        if cache_data:
+            cached_indicators = cache_data.get("data", {})
+            macro.update_from_dict(cached_indicators)
+            logger.warning("Using stale macro cache as fallback.")
+            return macro
+        logger.warning("No cache available. Using defaults.")
+        return macro
+
+    # Remove None values before updating
+    fetched_data = {k: v for k, v in fetched_data.items() if v is not None}
+
+    # Update macro context
+    macro.update_from_dict(fetched_data)
+
+    # Write to cache
+    _write_macro_cache(fetched_data)
+    logger.info(f"Macro data fetched and cached: {list(fetched_data.keys())}")
+
+    return macro
+
+
+def auto_macro_pipeline(
+    max_age_hours: float = MACRO_CACHE_MAX_AGE_HOURS,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    """
+    Fully automatic macro pipeline: fetch data + compute scores + sector biases.
+
+    This is the main entry point for the EOD system. It:
+    1. Fetches/caches macro data (USD/IDR, S&P500, VIX, Gold, Oil, BI Rate)
+    2. Computes the composite macro_score
+    3. Computes sector biases for all configured sectors
+    4. Returns a comprehensive result dict
+
+    Args:
+        max_age_hours: Max cache age before refetching (default: 6 hours)
+        force_refresh: Force fresh fetch ignoring cache
+
+    Returns:
+        Dict with:
+            - macro_score: Overall macro favorability (0-100)
+            - interpretation: Text interpretation of the score
+            - components: Score breakdown (rate, inflation, gdp, fx, global)
+            - sector_biases: Dict of sector → bias info
+            - global_indicators: Current global indicator values
+            - fetched_at: Timestamp of data fetch
+    """
+    # Step 1: Fetch macro data
+    macro = auto_fetch_macro(max_age_hours=max_age_hours, force_refresh=force_refresh)
+
+    # Step 2: Compute macro score
+    score_result = macro.compute_macro_score()
+
+    # Step 3: Compute sector biases for all configured sectors
+    sector_biases = {}
+    for sector in SECTOR_SENSITIVITY.keys():
+        bias = macro.get_sector_macro_bias(sector)
+        sector_biases[sector] = bias
+
+    # Step 4: Compile result
+    result = {
+        "macro_score": score_result["macro_score"],
+        "interpretation": score_result["interpretation"],
+        "components": score_result["components"],
+        "sector_biases": sector_biases,
+        "global_indicators": {
+            "usd_idr": macro.indicators.get("usd_idr"),
+            "bi_rate": macro.indicators.get("bi_rate"),
+            "vix": macro.global_indicators.get("vix"),
+            "gold": macro.global_indicators.get("gold"),
+            "crude_oil": macro.global_indicators.get("crude_oil"),
+            "sp500_return_1m": macro.global_indicators.get("sp500_return_1m"),
+        },
+        "fetched_at": datetime.now().isoformat(),
+    }
+
+    logger.info(
+        f"Macro pipeline complete: score={result['macro_score']:.1f}, "
+        f"interpretation={result['interpretation']}"
+    )
+
+    return result
+
+
+# =============================================================================
+# 6. MAIN — TEST
 # =============================================================================
 
 if __name__ == "__main__":
@@ -768,6 +1141,37 @@ if __name__ == "__main__":
     result_bad = macro_bad.compute_macro_score()
     print(f"  Overall Score: {result_bad['macro_score']:.1f}/100")
     print(f"  Interpretation: {result_bad['interpretation']}")
+
+    # ==========================================================================
+    # Test 7: AUTO-FETCH MACRO PIPELINE DEMO
+    # ==========================================================================
+    print("\n" + "=" * 70)
+    print("AUTO-FETCH MACRO PIPELINE — Demo")
+    print("=" * 70)
+
+    print(f"\n  Cache file: {MACRO_CACHE_FILE}")
+    print(f"  Max cache age: {MACRO_CACHE_MAX_AGE_HOURS} hours")
+    print(f"  yfinance symbols: {YFINANCE_SYMBOLS}")
+
+    print("\n--- Running auto_macro_pipeline() ---")
+    try:
+        pipeline_result = auto_macro_pipeline()
+        print(f"\n  Macro Score: {pipeline_result['macro_score']:.1f}/100")
+        print(f"  Interpretation: {pipeline_result['interpretation']}")
+        print(f"  Components:")
+        for k, v in pipeline_result["components"].items():
+            print(f"    {k}: {v:.1f}")
+        print(f"\n  Global Indicators:")
+        for k, v in pipeline_result["global_indicators"].items():
+            if v is not None:
+                print(f"    {k}: {v}")
+        print(f"\n  Sector Biases:")
+        for sector, bias in pipeline_result["sector_biases"].items():
+            print(f"    {sector:15s}: {bias['bias_score']:+6.2f} ({bias['interpretation']})")
+        print(f"\n  Fetched at: {pipeline_result['fetched_at']}")
+    except Exception as e:
+        print(f"  Auto-fetch failed (expected if no internet/yfinance): {e}")
+        print("  The system will use default values or cached data as fallback.")
 
     print("\n" + "=" * 70)
     print("All macro context tests completed successfully.")
