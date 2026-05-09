@@ -35,11 +35,51 @@ import numpy as np
 import json
 import os
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# SCORING CONFIG — Centralizes all magic numbers for tuning
+# =============================================================================
+
+@dataclass
+class ScoringConfig:
+    """Centralizes all agent scoring parameters for easy tuning."""
+    # TrendAgent
+    trend_ema_scores: Dict[str, float] = field(default_factory=lambda: {
+        "FULL_BULLISH": 90, "PARTIAL_BULLISH": 68,
+        "NEUTRAL": 50, "PARTIAL_BEARISH": 32, "FULL_BEARISH": 10,
+    })
+    trend_age_multiplier: float = 1.2
+    trend_age_cap: float = 95.0
+    hma_normalization: float = 2.0
+    adx_multiplier: float = 2.0
+
+    # SmartMoneyAgent
+    vpower_offset: float = 0.5
+    foreign_streak_strong: int = 5
+
+    # RiskAgent
+    position_mod_thresholds: tuple = (75, 60, 45, 30)
+    position_mod_values: tuple = (1.3, 1.0, 0.7, 0.4, 0.2)
+
+    # MasterDecisionAgent
+    strong_buy_threshold: float = 75.0
+    buy_threshold: float = 60.0
+    sell_threshold: float = 40.0
+    strong_sell_threshold: float = 25.0
+    min_confidence: float = 0.3
+
+    # Conflict detection
+    conflict_spread_threshold: float = 40.0
+    trend_sm_gap_threshold: float = 30.0
+    outlier_threshold: float = 35.0
 
 
 # =============================================================================
@@ -168,12 +208,13 @@ class TrendAgent(BaseAgent):
     Logic: Full EMA alignment + high trend_age + positive HMA = high score
     """
 
-    def __init__(self, weight: float = 0.30):
+    def __init__(self, weight: float = 0.30, config: Optional[ScoringConfig] = None):
         super().__init__(
             name="TrendAgent",
             description="Analyzes price trend via EMA alignment, HMA slope, and trend maturity",
             weight=weight,
         )
+        self.cfg = config or ScoringConfig()
 
     def analyze(self, data: Dict[str, Any]) -> AgentOutput:
         """
@@ -195,11 +236,7 @@ class TrendAgent(BaseAgent):
 
         # --- EMA Status (weight: 30%) ---
         ema_status = self._safe_get(data, "ema_status", "NEUTRAL").upper()
-        ema_scores = {
-            "FULL_BULLISH": 90, "PARTIAL_BULLISH": 68,
-            "NEUTRAL": 50,
-            "PARTIAL_BEARISH": 32, "FULL_BEARISH": 10,
-        }
+        ema_scores = self.cfg.trend_ema_scores
         ema_score = ema_scores.get(ema_status, 50)
         factors["ema_score"] = ema_score
 
@@ -213,11 +250,11 @@ class TrendAgent(BaseAgent):
         # --- Trend Age (weight: 20%) ---
         trend_age = self._safe_get(data, "trend_age", 0)
         if trend_age > 0:
-            # Uptrend maturity: longer = more reliable, cap at 60 days
-            age_score = min(50 + trend_age * 1.2, 95)
+            # Uptrend maturity: longer = more reliable, cap
+            age_score = min(50 + trend_age * self.cfg.trend_age_multiplier, self.cfg.trend_age_cap)
             reasoning_parts.append(f"Uptrend for {trend_age} days (mature)")
         elif trend_age < 0:
-            age_score = max(50 + trend_age * 1.2, 5)  # trend_age is negative
+            age_score = max(50 + trend_age * self.cfg.trend_age_multiplier, 5)
             reasoning_parts.append(f"Downtrend for {abs(trend_age)} days")
         else:
             age_score = 50
@@ -226,8 +263,8 @@ class TrendAgent(BaseAgent):
 
         # --- HMA Slope (weight: 20%) ---
         hma_slope = self._safe_get(data, "hma_slope", 0.0)
-        # Normalize slope: typical range -2% to +2%
-        hma_normalized = np.clip(hma_slope / 2.0, -1.0, 1.0)
+        # Normalize slope: typical range configurable
+        hma_normalized = np.clip(hma_slope / self.cfg.hma_normalization, -1.0, 1.0)
         hma_score = 50 + hma_normalized * 45
         factors["hma_score"] = round(hma_score, 1)
 
@@ -259,7 +296,7 @@ class TrendAgent(BaseAgent):
         # --- ADX strength (weight: 10%) ---
         adx = self._safe_get(data, "adx", 20.0)
         # ADX > 25 = trending, > 40 = strong trend
-        adx_score = np.clip(adx * 2, 0, 100)
+        adx_score = np.clip(adx * self.cfg.adx_multiplier, 0, 100)
         factors["adx_score"] = round(adx_score, 1)
 
         if adx >= 40:
@@ -918,7 +955,7 @@ class MasterDecisionAgent:
         )
 
     def _detect_conflicts(self, agent_outputs: Dict[str, AgentOutput]) -> List[str]:
-        """Detect disagreements between agents."""
+        """Detect disagreements between agents — enhanced with Macro vs Risk + outlier."""
         conflicts = []
         scores = {name: out.score for name, out in agent_outputs.items()}
 
@@ -939,9 +976,26 @@ class MasterDecisionAgent:
         sm_s = scores.get("SmartMoneyAgent", 50)
         if abs(trend_s - sm_s) > 30:
             if trend_s > sm_s:
-                conflicts.append("TREND_SM_GAP: Trend bullish but smart money not confirming")
+                conflicts.append("TREND_SM_GAP: Trend bullish tapi SM tidak konfirmasi")
             else:
-                conflicts.append("TREND_SM_GAP: Smart money accumulating but trend weak")
+                conflicts.append("TREND_SM_GAP: SM akumulasi tapi trend lemah")
+
+        # NEW: Macro vs Risk conflict
+        macro_s = scores.get("MacroAgent", 50)
+        risk_s = scores.get("RiskAgent", 50)
+        if macro_s > 65 and risk_s < 35:
+            conflicts.append("MACRO_RISK_CONFLICT: Macro positif tapi risiko ekstrem")
+        elif macro_s < 35 and risk_s > 65:
+            conflicts.append("MACRO_RISK_CONFLICT: Macro buruk tapi risiko dinilai rendah")
+
+        # NEW: Outlier agent (menyimpang >35 dari rata-rata)
+        if len(scores) >= 3:
+            mean_s = sum(scores.values()) / len(scores)
+            for name, s in scores.items():
+                if abs(s - mean_s) > 35:
+                    conflicts.append(
+                        f"OUTLIER: {name} jauh dari konsensus ({s:.0f} vs mean {mean_s:.0f})"
+                    )
 
         return conflicts
 
@@ -1121,12 +1175,16 @@ class AgentOrchestrator:
 
         # --- Master Decision ---
         try:
-            # Use agent default weights
+            # Use agent default weights — ALWAYS pass explicitly (Fix #1)
             weights = {a.name: a.weight for a in self.agents if a.name in agent_outputs}
             # Normalize
             total_w = sum(weights.values())
             if total_w > 0:
                 weights = {k: v / total_w for k, v in weights.items()}
+
+            # Explicit fallback — never let weights be empty
+            if not weights:
+                weights = {name: 1.0 / len(agent_outputs) for name in agent_outputs}
 
             master_decision = self.master.decide(ticker, agent_outputs, weights)
             analysis.master_decision = master_decision
@@ -1143,29 +1201,43 @@ class AgentOrchestrator:
     def run_batch(
         self,
         tickers_data: Dict[str, Dict[str, Any]],
+        max_workers: int = 8,
     ) -> List[FullAnalysis]:
         """
-        Run analysis for multiple tickers (batch screening).
+        Run analysis for multiple tickers (batch screening) — PARALLEL.
 
         Args:
             tickers_data: Dict of ticker -> {
                 "signal_data": ..., "extended_data": ...,
                 "macro_data": ..., "sentiment_data": ...
             }
+            max_workers: Max threads for parallel execution (default 8)
 
         Returns:
             List of FullAnalysis, sorted by master score descending
         """
         results = []
-        for ticker, data in tickers_data.items():
-            analysis = self.run_analysis(
+
+        def _run_one(ticker, data):
+            return self.run_analysis(
                 ticker=ticker,
                 signal_data=data.get("signal_data"),
                 extended_data=data.get("extended_data"),
                 macro_data=data.get("macro_data"),
                 sentiment_data=data.get("sentiment_data"),
             )
-            results.append(analysis)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_run_one, ticker, data): ticker
+                for ticker, data in tickers_data.items()
+            }
+            for future in as_completed(futures):
+                try:
+                    results.append(future.result())
+                except Exception as e:
+                    ticker = futures[future]
+                    logger.error(f"Batch failed for {ticker}: {e}")
 
         # Sort by master decision score (highest first)
         results.sort(
@@ -1180,15 +1252,23 @@ class AgentOrchestrator:
         extended_data: Optional[Dict],
         macro_data: Optional[Dict],
     ) -> Dict[str, Any]:
-        """Merge data sources for Risk Agent."""
+        """Merge data sources for Risk Agent. Warns on missing required keys."""
+        REQUIRED_KEYS = ["regime", "atr_ratio", "volatility_20d", "drawdown_pct", "rr_ratio"]
+        DEFAULTS = {
+            "regime": "SIDEWAYS", "atr_ratio": 1.0,
+            "volatility_20d": 25.0, "drawdown_pct": 0.0, "rr_ratio": 1.0,
+        }
         risk_data = {}
         if signal_data:
-            risk_data["regime"] = signal_data.get("regime", "SIDEWAYS")
-            risk_data["atr_ratio"] = signal_data.get("atr_ratio", 1.0)
-            risk_data["volatility_20d"] = signal_data.get("volatility_20d", 25.0)
-            risk_data["drawdown_pct"] = signal_data.get("drawdown_pct", 0.0)
-            risk_data["rr_ratio"] = signal_data.get("rr_ratio", 1.0)
+            for key in REQUIRED_KEYS:
+                if key not in signal_data:
+                    logger.warning(f"RiskAgent: key '{key}' missing in signal_data, using default={DEFAULTS[key]}")
+                risk_data[key] = signal_data.get(key, DEFAULTS[key])
             risk_data["days_in_regime"] = signal_data.get("days_in_regime", 0)
+        else:
+            logger.warning("RiskAgent: signal_data is None/empty, using all defaults")
+            risk_data.update(DEFAULTS)
+            risk_data["days_in_regime"] = 0
         if macro_data:
             risk_data["market_score"] = macro_data.get("market_score", 50.0)
             risk_data["risk_level"] = macro_data.get("risk_level", "MEDIUM")
@@ -1218,8 +1298,7 @@ class AdaptiveLearning:
     """
     Tracks agent decisions and actual outcomes to enable weight adjustment.
     Stores decisions in a simple JSON log (data/agent_decisions.json).
-
-    This is a stub — full implementation will use backtesting results.
+    Thread-safe with threading.Lock for concurrent access.
     """
 
     DEFAULT_LOG_PATH = os.path.join(
@@ -1229,27 +1308,30 @@ class AdaptiveLearning:
     def __init__(self, log_path: Optional[str] = None):
         self.log_path = log_path or self.DEFAULT_LOG_PATH
         self._decisions: List[Dict[str, Any]] = []
+        self._lock = threading.Lock()
         self._load_log()
 
     def _load_log(self) -> None:
         """Load existing decision log from disk."""
-        try:
-            if os.path.exists(self.log_path):
-                with open(self.log_path, "r", encoding="utf-8") as f:
-                    self._decisions = json.load(f)
-                logger.info(f"Loaded {len(self._decisions)} decisions from log")
-        except (json.JSONDecodeError, IOError) as e:
-            logger.warning(f"Could not load decision log: {e}")
-            self._decisions = []
+        with self._lock:
+            try:
+                if os.path.exists(self.log_path):
+                    with open(self.log_path, "r", encoding="utf-8") as f:
+                        self._decisions = json.load(f)
+                    logger.info(f"Loaded {len(self._decisions)} decisions from log")
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Could not load decision log: {e}")
+                self._decisions = []
 
     def _save_log(self) -> None:
-        """Save decision log to disk."""
-        try:
-            os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
-            with open(self.log_path, "w", encoding="utf-8") as f:
-                json.dump(self._decisions, f, ensure_ascii=False, indent=2)
-        except (IOError, OSError) as e:
-            logger.error(f"Could not save decision log: {e}")
+        """Save decision log to disk — thread-safe."""
+        with self._lock:
+            try:
+                os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+                with open(self.log_path, "w", encoding="utf-8") as f:
+                    json.dump(self._decisions, f, ensure_ascii=False, indent=2)
+            except (IOError, OSError) as e:
+                logger.error(f"Could not save decision log: {e}")
 
     def record_decision(
         self,
@@ -1310,16 +1392,18 @@ class AdaptiveLearning:
 
     def get_agent_accuracy(self, agent_name: str, last_n: int = 100) -> float:
         """
-        Compute accuracy of a specific agent over recent decisions.
+        Compute weighted accuracy of a specific agent over recent decisions.
+        Uses magnitude-weighted scoring: correct prediction with larger return
+        gets more credit than correct prediction with tiny return.
 
-        Accuracy = % of decisions where agent's direction matched outcome.
+        Accuracy uses tanh(|return_5d| / 3) as magnitude weight.
 
         Args:
             agent_name: Name of the agent (e.g., "TrendAgent")
             last_n: Number of recent decisions to evaluate
 
         Returns:
-            Accuracy as float 0-1 (or 0.5 if insufficient data)
+            Weighted accuracy as float 0-1 (or 0.5 if insufficient data)
         """
         # Filter decisions with outcomes
         with_outcomes = [
@@ -1331,27 +1415,27 @@ class AdaptiveLearning:
             return 0.5  # Not enough data
 
         recent = with_outcomes[-last_n:]
-        correct = 0
+        score = 0.0
 
         for record in recent:
             agent_score = record["agent_scores"][agent_name]
             outcome = record["outcome"]
             return_5d = outcome.get("return_5d", 0)
 
-            # Agent was bullish (score > 55) and stock went up, or
-            # Agent was bearish (score < 45) and stock went down
+            # Magnitude weight: tanh(|return| / 3) — bigger moves count more
+            magnitude = float(np.tanh(abs(return_5d) / 3.0))
+
             agent_bullish = agent_score > 55
             agent_bearish = agent_score < 45
             stock_up = return_5d > 0
             stock_down = return_5d < 0
 
             if (agent_bullish and stock_up) or (agent_bearish and stock_down):
-                correct += 1
+                score += magnitude  # Correct direction, weighted by magnitude
             elif not agent_bullish and not agent_bearish:
-                # Neutral — count as half correct
-                correct += 0.5
+                score += 0.3  # Neutral — partial credit
 
-        return round(correct / len(recent), 4)
+        return round(score / len(recent), 4)
 
     def get_all_accuracies(self, last_n: int = 100) -> Dict[str, float]:
         """Get accuracy for all agents."""
