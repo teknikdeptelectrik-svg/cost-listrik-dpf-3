@@ -1,0 +1,29 @@
+# ============================================================================
+# Pixellent AI Engine — Python Dependencies
+# Phase 1: Foundation (Data Pipeline & Basic Scanner)
+# ============================================================================
+# Install: pip install -r requirements.txt
+# Python: 3.11+
+# ============================================================================
+
+# --- Core Data Processing ---
+pandas>=2.1.0
+numpy>=1.24.0
+
+# --- Excel Parsing ---
+openpyxl>=3.1.0          # .xlsx read/write
+xlrd>=2.0.0              # .xls legacy format (optional)
+
+# --- Database ---
+sqlalchemy>=2.0.0        # ORM & connection pooling
+psycopg2-binary>=2.9.0   # PostgreSQL driver
+
+# --- Web Dashboard ---
+streamlit>=1.30.0        # Upload & main dashboard
+plotly>=5.18.0           # Interactive charts
+
+# --- Technical Analysis (existing) ---
+yfinance>=0.2.30         # Fallback data source (existing code)
+
+# --- Utilities ---
+python-dateutil>=2.8.0   # Date parsing
