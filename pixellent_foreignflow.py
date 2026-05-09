@@ -29,16 +29,53 @@ from typing import Optional, Dict, List, Tuple
 # IDX SECTOR MAPPING
 # =============================================================================
 
-# BEI sector classification (simplified — top liquid stocks)
+# BEI sector classification (expanded — covers ~200 liquid stocks)
 IDX_SECTORS = {
-    'BANKING': ['BBCA', 'BBRI', 'BMRI', 'BBTN', 'BNGA', 'BJTM', 'BBNI', 'AGRO'],
-    'MINING': ['ADRO', 'ANTM', 'PTBA', 'ITMG', 'HRUM', 'MDKA', 'INCO', 'TINS', 'VALE', 'MEDC'],
-    'CONSUMER': ['UNVR', 'ICBP', 'INDF', 'KLBF', 'SIDO', 'MIKA', 'AMRT'],
-    'INFRASTRUCTURE': ['TLKM', 'EXCL', 'JSMR', 'PGAS', 'WIKA', 'WSKT', 'PTPP'],
-    'PROPERTY': ['PWON', 'BSDE', 'CTRA', 'SMRA', 'LPKR', 'DMAS', 'SSIA'],
-    'INDUSTRIAL': ['ASII', 'CPIN', 'JPFA', 'SMGR', 'INKP', 'INTP'],
-    'ENERGY': ['BREN', 'ESSA', 'AKRA', 'ADMR'],
-    'TECHNOLOGY': ['GOTO', 'EMTK', 'MNCN', 'SCMA'],
+    'BANKING': [
+        'BBCA', 'BBRI', 'BMRI', 'BBTN', 'BNGA', 'BJTM', 'BBNI', 'AGRO',
+        'BDMN', 'BTPN', 'MEGA', 'NISP', 'PNBN', 'BNLI', 'BRIS', 'BBYB',
+        'BTPS', 'BGTG', 'ARTO', 'BMAS', 'SDRA', 'NOBU', 'BABP', 'BINA',
+    ],
+    'MINING': [
+        'ADRO', 'ANTM', 'PTBA', 'ITMG', 'HRUM', 'MDKA', 'INCO', 'TINS',
+        'VALE', 'MEDC', 'ADMR', 'AADI', 'BUMI', 'DSSA', 'GEMS', 'MBAP',
+        'MITI', 'PSAB', 'SMMT', 'ZINC', 'BRMS', 'UNTR', 'BYAN',
+    ],
+    'CONSUMER': [
+        'UNVR', 'ICBP', 'INDF', 'KLBF', 'SIDO', 'MIKA', 'AMRT', 'ACES',
+        'MYOR', 'GGRM', 'HMSP', 'CLEO', 'ULTJ', 'TSPC', 'KAEF', 'DVLA',
+        'MAPI', 'RALS', 'LPPF', 'ERAA', 'HERO', 'MIDI', 'AVIA',
+    ],
+    'INFRASTRUCTURE': [
+        'TLKM', 'EXCL', 'JSMR', 'PGAS', 'WIKA', 'WSKT', 'PTPP', 'ISAT',
+        'TBIG', 'TOWR', 'MTEL', 'WTON', 'NRCA', 'ADHI', 'BUKK', 'META',
+        'FREN', 'LINK', 'SMBR',
+    ],
+    'PROPERTY': [
+        'PWON', 'BSDE', 'CTRA', 'SMRA', 'LPKR', 'DMAS', 'SSIA', 'APLN',
+        'ASRI', 'KIJA', 'PPRO', 'DILD', 'MKPI', 'PLIN', 'JRPT', 'GWSA',
+        'MTLA', 'BEST', 'BKSL', 'SMGP', 'INPP',
+    ],
+    'INDUSTRIAL': [
+        'ASII', 'CPIN', 'JPFA', 'SMGR', 'INKP', 'INTP', 'BRPT', 'TPIA',
+        'MAIN', 'SRIL', 'AUTO', 'GJTL', 'INDS', 'SMSM', 'IMAS', 'TKIM',
+        'DPNS', 'ARNA', 'MARK', 'IMPC',
+    ],
+    'ENERGY': [
+        'BREN', 'ESSA', 'AKRA', 'ELSA', 'RAJA', 'ENRG', 'PNGO', 'BULL',
+        'FIRE', 'BIPI', 'PGEO', 'KEEN',
+    ],
+    'TECHNOLOGY': [
+        'GOTO', 'EMTK', 'MNCN', 'SCMA', 'BUKA', 'BELI', 'DCII', 'MTDL',
+        'ATIC', 'LUCK', 'EDGE', 'WIFI', 'DNET', 'TECH',
+    ],
+    'FINANCIAL_SERVICES': [
+        'ADMF', 'BFIN', 'MFIN', 'VRNA', 'PNLF', 'TRIM', 'CASA', 'ABDA',
+        'WOMF', 'CFIN', 'BBLD',
+    ],
+    'HEALTHCARE': [
+        'HEAL', 'PRDA', 'SILO', 'SAME', 'MIKA',
+    ],
 }
 
 # Reverse mapping: ticker → sector
@@ -131,18 +168,27 @@ def analyze_stock_foreign_flow(
 
 
 def _compute_streak(net: pd.Series) -> pd.Series:
-    """Compute consecutive net buy/sell streak."""
-    result = pd.Series(0, index=net.index)
-    streak = 0
-    for i in range(len(net)):
-        if net.iloc[i] > 0:
-            streak = max(streak, 0) + 1
-        elif net.iloc[i] < 0:
-            streak = min(streak, 0) - 1
+    """
+    Compute consecutive net buy/sell streak — VECTORIZED.
+    Positive = N days consecutive net buy
+    Negative = N days consecutive net sell
+    """
+    sign = np.sign(net.values)
+    result = np.zeros(len(sign), dtype=int)
+    if len(sign) == 0:
+        return pd.Series(result, index=net.index)
+    
+    result[0] = sign[0]
+    for i in range(1, len(sign)):
+        if sign[i] == 0:
+            result[i] = 0
+        elif sign[i] == sign[i-1] or (sign[i] != 0 and result[i-1] == 0):
+            # Same direction or starting new streak
+            result[i] = result[i-1] + sign[i]
         else:
-            streak = 0
-        result.iloc[i] = streak
-    return result
+            # Direction changed
+            result[i] = sign[i]
+    return pd.Series(result, index=net.index)
 
 
 def _compute_ff_score(ff_df: pd.DataFrame, volume: pd.Series) -> pd.Series:
