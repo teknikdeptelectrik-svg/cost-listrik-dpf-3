@@ -348,7 +348,7 @@ with tab_screening:
                         if v >= 2:   return 'background-color: #1a4a1a; color: #00ff88'
                         if v >= 1:   return 'background-color: #2a3a1a; color: #88cc44'
                         return 'background-color: #4a1a1a; color: #ff8888'
-                    except:
+                    except (ValueError, TypeError):
                         return ''
 
                 # Warna 1D%
@@ -360,7 +360,7 @@ with tab_screening:
                         if v < -3:   return 'color: #ff4444'
                         if v < 0:    return 'color: #ff8888'
                         return ''
-                    except:
+                    except (ValueError, TypeError):
                         return ''
 
                 # Warna Regime

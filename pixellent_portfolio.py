@@ -94,7 +94,7 @@ class Position:
     @property
     def holding_days(self) -> int:
         try: return (datetime.now() - datetime.strptime(self.entry_date, "%Y-%m-%d")).days
-        except: return 0
+        except (ValueError, TypeError): return 0
 
     def to_dict(self) -> dict: return asdict(self)
     @classmethod
@@ -115,7 +115,7 @@ class ClosedPosition:
         try:
             self.holding_days = (datetime.strptime(self.exit_date, "%Y-%m-%d") -
                                  datetime.strptime(self.entry_date, "%Y-%m-%d")).days
-        except: pass
+        except Exception: pass
 
     def to_dict(self) -> dict: return asdict(self)
     @classmethod
@@ -324,7 +324,7 @@ class Portfolio:
         if os.path.exists(self.history_file):
             try:
                 with open(self.history_file, 'r') as f: history = json.load(f)
-            except: history = []
+            except (json.JSONDecodeError, IOError): history = []
         history.append(closed.to_dict())
         try:
             with open(self.history_file, 'w') as f: json.dump(history, f, indent=2, default=str)
@@ -334,7 +334,7 @@ class Portfolio:
         if not os.path.exists(self.history_file): return []
         try:
             with open(self.history_file, 'r') as f: return json.load(f)
-        except: return []
+        except (json.JSONDecodeError, IOError): return []
 
     def __repr__(self) -> str:
         s = self.get_summary()
@@ -539,10 +539,10 @@ class PerformanceTracker:
         all_dates = []
         for c in closed:
             try: all_dates.append(datetime.strptime(c.entry_date, "%Y-%m-%d"))
-            except: pass
+            except Exception: pass
         for p in portfolio.positions:
             try: all_dates.append(datetime.strptime(p.entry_date, "%Y-%m-%d"))
-            except: pass
+            except Exception: pass
         days_active = (datetime.now() - min(all_dates)).days if all_dates else 0
         ann_ret = ((1 + total_ret / 100) ** (365 / max(1, days_active)) - 1) * 100 if days_active > 0 else 0
 
@@ -688,7 +688,7 @@ class MonthlyReportGenerator:
             y, m = month.split("-")
             month_start = datetime(int(y), int(m), 1)
             month_end = datetime(int(y) + (1 if int(m)==12 else 0), 1 if int(m)==12 else int(m)+1, 1) - timedelta(days=1)
-        except:
+        except (ValueError, TypeError):
             month_start, month_end = datetime.now().replace(day=1), datetime.now()
 
         monthly_trades = []
@@ -696,7 +696,7 @@ class MonthlyReportGenerator:
             try:
                 if month_start <= datetime.strptime(c.exit_date, "%Y-%m-%d") <= month_end:
                     monthly_trades.append(c)
-            except: pass
+            except Exception: pass
 
         monthly_pnl = sum(t.realized_pnl for t in monthly_trades)
         m_wins = [t for t in monthly_trades if t.realized_pnl > 0]
