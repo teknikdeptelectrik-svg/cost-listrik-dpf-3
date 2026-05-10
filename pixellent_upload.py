@@ -19,6 +19,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, date, timedelta
 from pathlib import Path
+from sqlalchemy import text as sa_text
 
 from pixellent_data_ingestion import (
     parse_idx_excel, ingest_file, ingest_batch,
@@ -416,7 +417,7 @@ with tab_health:
     if engine is not None:
         try:
             with engine.connect() as conn:
-                conn.execute(pd.io.sql.text("SELECT 1"))
+                conn.execute(sa_text("SELECT 1"))
             st.success(f"✅ Connected to `{db_name}` at `{db_host}:{db_port}`")
         except Exception as e:
             st.error(f"❌ Connection failed: {e}")
@@ -434,7 +435,7 @@ with tab_health:
             try:
                 with engine.connect() as conn:
                     count = conn.execute(
-                        pd.io.sql.text(f"SELECT COUNT(*) FROM {table}")
+                        sa_text(f"SELECT COUNT(*) FROM {table}")
                     ).scalar()
                 st.write(f"  ✅ `{table}` — {count:,} rows")
             except Exception:

@@ -378,11 +378,11 @@ with tab_screening:
                     if 'Lagging'   in str(val): return 'color: #ff4444'
                     return ''
 
-                styled = styled.applymap(sinyal_color, subset=['Sinyal'])
-                styled = styled.applymap(rr_color,     subset=['R/R'])
-                styled = styled.applymap(pct_color,    subset=['1D%', '5D%', '13D%'])
-                styled = styled.applymap(regime_color, subset=['Regime'])
-                styled = styled.applymap(siklus_color, subset=['SIKLUS'])
+                styled = styled.map(sinyal_color, subset=['Sinyal'])
+                styled = styled.map(rr_color,     subset=['R/R'])
+                styled = styled.map(pct_color,    subset=['1D%', '5D%', '13D%'])
+                styled = styled.map(regime_color, subset=['Regime'])
+                styled = styled.map(siklus_color, subset=['SIKLUS'])
 
                 styled = styled.format({
                     'Close':    '{:.0f}',
@@ -669,20 +669,21 @@ with tab_ihsg:
         )
 
         # IHSG line
+        ihsg_close = ihsg['close']
         fig_ihsg.add_trace(go.Scatter(
-            x=ihsg.index, y=ihsg,
+            x=ihsg_close.index, y=ihsg_close,
             name='IHSG', line=dict(color='#ffffff', width=1.5)
         ), row=1, col=1)
 
         # MA IHSG
-        ma21_ihsg = ihsg.rolling(21).mean()
-        ma55_ihsg = ihsg.rolling(55).mean()
+        ma21_ihsg = ihsg_close.rolling(21).mean()
+        ma55_ihsg = ihsg_close.rolling(55).mean()
         fig_ihsg.add_trace(go.Scatter(
-            x=ihsg.index, y=ma21_ihsg,
+            x=ihsg_close.index, y=ma21_ihsg,
             name='MA21', line=dict(color='#4488ff', width=1)
         ), row=1, col=1)
         fig_ihsg.add_trace(go.Scatter(
-            x=ihsg.index, y=ma55_ihsg,
+            x=ihsg_close.index, y=ma55_ihsg,
             name='MA55', line=dict(color='#ff4444', width=1)
         ), row=1, col=1)
 
@@ -693,7 +694,7 @@ with tab_ihsg:
             'HIGH_VOL': 'rgba(255,68,68,0.08)'
         }
         prev_regime = None
-        start_idx   = ihsg.index[0]
+        start_idx   = ihsg_close.index[0]
 
         for i, (idx, row_r) in enumerate(regime_hist.iterrows()):
             if row_r['regime'] != prev_regime:
