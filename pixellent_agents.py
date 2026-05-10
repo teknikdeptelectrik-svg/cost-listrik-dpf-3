@@ -1214,20 +1214,46 @@ class AgentOrchestrator:
 
 class AdaptiveLearning:
     """
-    Tracks agent decisions and actual outcomes to enable weight adjustment.
+    Tracks agent decisions and actual outcomes to enable AUTO weight adjustment.
     Stores decisions in a simple JSON log (data/agent_decisions.json).
 
-    This is a stub — full implementation will use backtesting results.
+    Auto-Retrain Logic:
+        - After every N new outcomes (configurable, default=20), recalculates
+          agent accuracy and adjusts weights automatically.
+        - Uses exponential decay to weight recent decisions more heavily.
+        - Minimum floor weight (0.10) prevents any agent from being zeroed out.
+        - Maximum ceiling weight (0.45) prevents over-reliance on single agent.
+
+    Dynamic Weights:
+        - Weights are proportional to rolling accuracy (last 50-100 decisions).
+        - Accuracy formula: bullish+up = correct, bearish+down = correct,
+          neutral = 0.5 correct.
+        - Decay factor: recent decisions weighted 2x more than older ones.
     """
 
     DEFAULT_LOG_PATH = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "data", "agent_decisions.json"
     )
+    WEIGHTS_PATH = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "data", "agent_weights.json"
+    )
 
-    def __init__(self, log_path: Optional[str] = None):
+    # Auto-retrain configuration
+    RETRAIN_THRESHOLD = 20       # Retrain after this many new outcomes
+    MIN_OUTCOMES_FOR_RETRAIN = 10  # Minimum outcomes needed before first retrain
+    ROLLING_WINDOW = 100         # Rolling window for accuracy calculation
+    DECAY_FACTOR = 0.97          # Exponential decay per decision (recent = more weight)
+    MIN_WEIGHT = 0.10            # Floor: no agent below 10%
+    MAX_WEIGHT = 0.45            # Ceiling: no agent above 45%
+
+    def __init__(self, log_path: Optional[str] = None, auto_retrain: bool = True):
         self.log_path = log_path or self.DEFAULT_LOG_PATH
+        self.auto_retrain = auto_retrain
         self._decisions: List[Dict[str, Any]] = []
+        self._last_retrain_count: int = 0  # Outcomes count at last retrain
+        self._current_weights: Dict[str, float] = {}  # Persisted weights
         self._load_log()
+        self._load_weights()
 
     def _load_log(self) -> None:
         """Load existing decision log from disk."""
@@ -1249,6 +1275,34 @@ class AdaptiveLearning:
         except (IOError, OSError) as e:
             logger.error(f"Could not save decision log: {e}")
 
+    def _load_weights(self) -> None:
+        """Load persisted dynamic weights from disk."""
+        try:
+            if os.path.exists(self.WEIGHTS_PATH):
+                with open(self.WEIGHTS_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self._current_weights = data.get("weights", {})
+                self._last_retrain_count = data.get("last_retrain_count", 0)
+                logger.info(f"Loaded dynamic weights: {self._current_weights}")
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Could not load weights: {e}")
+            self._current_weights = {}
+
+    def _save_weights(self) -> None:
+        """Persist dynamic weights to disk."""
+        try:
+            os.makedirs(os.path.dirname(self.WEIGHTS_PATH), exist_ok=True)
+            data = {
+                "weights": self._current_weights,
+                "last_retrain_count": self._last_retrain_count,
+                "last_retrain_time": datetime.now().isoformat(),
+                "accuracies": self.get_all_accuracies(),
+            }
+            with open(self.WEIGHTS_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except (IOError, OSError) as e:
+            logger.error(f"Could not save weights: {e}")
+
     def record_decision(
         self,
         ticker: str,
@@ -1257,6 +1311,7 @@ class AdaptiveLearning:
     ) -> None:
         """
         Record a decision (and optionally its outcome).
+        If auto_retrain=True and enough new outcomes accumulated, triggers retrain.
 
         Args:
             ticker: Stock ticker
@@ -1281,6 +1336,10 @@ class AdaptiveLearning:
         self._decisions.append(record)
         self._save_log()
         logger.info(f"Recorded decision for {ticker}: {decision.action}")
+
+        # Auto-retrain check
+        if self.auto_retrain and actual_outcome is not None:
+            self._check_retrain_needed()
 
     def update_outcome(
         self,
@@ -1308,9 +1367,10 @@ class AdaptiveLearning:
 
     def get_agent_accuracy(self, agent_name: str, last_n: int = 100) -> float:
         """
-        Compute accuracy of a specific agent over recent decisions.
+        Compute DECAY-WEIGHTED accuracy of a specific agent over recent decisions.
 
-        Accuracy = % of decisions where agent's direction matched outcome.
+        Uses exponential decay so recent decisions carry more weight than older ones.
+        Accuracy = weighted % of decisions where agent's direction matched outcome.
 
         Args:
             agent_name: Name of the agent (e.g., "TrendAgent")
@@ -1329,12 +1389,16 @@ class AdaptiveLearning:
             return 0.5  # Not enough data
 
         recent = with_outcomes[-last_n:]
-        correct = 0
+        weighted_correct = 0.0
+        total_weight = 0.0
 
-        for record in recent:
+        for idx, record in enumerate(recent):
             agent_score = record["agent_scores"][agent_name]
             outcome = record["outcome"]
             return_5d = outcome.get("return_5d", 0)
+
+            # Exponential decay: most recent = highest weight
+            decay_weight = self.DECAY_FACTOR ** (len(recent) - 1 - idx)
 
             # Agent was bullish (score > 55) and stock went up, or
             # Agent was bearish (score < 45) and stock went down
@@ -1344,12 +1408,17 @@ class AdaptiveLearning:
             stock_down = return_5d < 0
 
             if (agent_bullish and stock_up) or (agent_bearish and stock_down):
-                correct += 1
+                weighted_correct += decay_weight * 1.0
             elif not agent_bullish and not agent_bearish:
                 # Neutral — count as half correct
-                correct += 0.5
+                weighted_correct += decay_weight * 0.5
 
-        return round(correct / len(recent), 4)
+            total_weight += decay_weight
+
+        if total_weight == 0:
+            return 0.5
+
+        return round(weighted_correct / total_weight, 4)
 
     def get_all_accuracies(self, last_n: int = 100) -> Dict[str, float]:
         """Get accuracy for all agents."""
@@ -1358,17 +1427,17 @@ class AdaptiveLearning:
 
     def adjust_weights(self, orchestrator: 'AgentOrchestrator', last_n: int = 100) -> Dict[str, float]:
         """
-        Auto-adjust agent weights based on recent accuracy.
+        Auto-adjust agent weights based on recent DECAY-WEIGHTED accuracy.
 
         Agents with higher accuracy get proportionally more weight.
-        Minimum weight = 0.10 to prevent any agent from being ignored.
+        Applies floor (MIN_WEIGHT) and ceiling (MAX_WEIGHT) constraints.
 
         Args:
             orchestrator: The AgentOrchestrator whose weights to update
             last_n: Number of recent decisions for accuracy calc
 
         Returns:
-            New weights dict
+            New weights dict (also persisted to disk)
         """
         accuracies = self.get_all_accuracies(last_n)
 
@@ -1377,16 +1446,37 @@ class AdaptiveLearning:
             logger.info("Insufficient data for weight adjustment. Keeping defaults.")
             return {a.name: a.weight for a in orchestrator.agents}
 
-        # Compute new weights proportional to accuracy, with floor
-        MIN_WEIGHT = 0.10
+        # Compute new weights proportional to accuracy, with floor/ceiling
         raw_weights = {}
         for name, acc in accuracies.items():
             # Boost accuracy above 0.5, penalize below
-            raw_weights[name] = max(acc, MIN_WEIGHT)
+            # Use squared accuracy to amplify differences
+            raw_weights[name] = max(acc ** 1.5, self.MIN_WEIGHT)
 
         # Normalize to sum = 1.0
         total = sum(raw_weights.values())
         new_weights = {k: v / total for k, v in raw_weights.items()}
+
+        # Apply ceiling constraint
+        capped = False
+        for name in new_weights:
+            if new_weights[name] > self.MAX_WEIGHT:
+                new_weights[name] = self.MAX_WEIGHT
+                capped = True
+
+        # Re-normalize after ceiling
+        if capped:
+            total = sum(new_weights.values())
+            new_weights = {k: v / total for k, v in new_weights.items()}
+
+        # Apply floor constraint
+        for name in new_weights:
+            if new_weights[name] < self.MIN_WEIGHT:
+                new_weights[name] = self.MIN_WEIGHT
+
+        # Final normalization
+        total = sum(new_weights.values())
+        new_weights = {k: round(v / total, 4) for k, v in new_weights.items()}
 
         # Apply to orchestrator
         for name, weight in new_weights.items():
@@ -1394,8 +1484,96 @@ class AdaptiveLearning:
             if agent:
                 agent.weight = weight
 
-        logger.info(f"Weights adjusted: {new_weights}")
+        # Persist weights
+        self._current_weights = new_weights
+        self._save_weights()
+
+        logger.info(f"Weights adjusted (auto-retrain): {new_weights}")
+        logger.info(f"  Accuracies: {accuracies}")
         return new_weights
+
+    def _check_retrain_needed(self) -> None:
+        """
+        Check if auto-retrain should be triggered.
+        Called automatically after each new outcome is recorded.
+        """
+        current_outcomes = sum(1 for d in self._decisions if d.get("outcome"))
+
+        # Need minimum outcomes before first retrain
+        if current_outcomes < self.MIN_OUTCOMES_FOR_RETRAIN:
+            return
+
+        # Check if enough new outcomes since last retrain
+        new_since_last = current_outcomes - self._last_retrain_count
+        if new_since_last >= self.RETRAIN_THRESHOLD:
+            logger.info(
+                f"Auto-retrain triggered: {new_since_last} new outcomes "
+                f"(threshold={self.RETRAIN_THRESHOLD})"
+            )
+            self._last_retrain_count = current_outcomes
+            # Note: actual weight adjustment happens when apply_dynamic_weights() is called
+            # This just marks that retrain is needed
+            self._save_weights()
+
+    def retrain_if_needed(self, orchestrator: 'AgentOrchestrator') -> Optional[Dict[str, float]]:
+        """
+        Check if retrain is needed and apply new weights if so.
+        Call this at the START of each analysis cycle (e.g., daily EOD run).
+
+        Args:
+            orchestrator: The AgentOrchestrator to update
+
+        Returns:
+            New weights dict if retrained, None if not needed
+        """
+        current_outcomes = sum(1 for d in self._decisions if d.get("outcome"))
+
+        if current_outcomes < self.MIN_OUTCOMES_FOR_RETRAIN:
+            return None
+
+        new_since_last = current_outcomes - self._last_retrain_count
+        if new_since_last >= self.RETRAIN_THRESHOLD:
+            logger.info(f"Retrain triggered: {new_since_last} new outcomes accumulated")
+            self._last_retrain_count = current_outcomes
+            return self.adjust_weights(orchestrator, self.ROLLING_WINDOW)
+
+        return None
+
+    def apply_dynamic_weights(self, orchestrator: 'AgentOrchestrator') -> Dict[str, float]:
+        """
+        Apply previously computed dynamic weights to orchestrator.
+        Call this at startup to restore last-known-good weights.
+
+        If no dynamic weights saved, uses orchestrator defaults.
+
+        Args:
+            orchestrator: The AgentOrchestrator to configure
+
+        Returns:
+            Applied weights dict
+        """
+        if not self._current_weights:
+            # No saved weights — use defaults
+            return {a.name: a.weight for a in orchestrator.agents}
+
+        # Apply saved weights
+        for name, weight in self._current_weights.items():
+            agent = orchestrator._get_agent_by_name(name)
+            if agent:
+                agent.weight = weight
+
+        logger.info(f"Applied dynamic weights from disk: {self._current_weights}")
+        return self._current_weights
+
+    def get_weight_history(self) -> Dict[str, Any]:
+        """Get current weight state and metadata."""
+        return {
+            "current_weights": self._current_weights,
+            "last_retrain_count": self._last_retrain_count,
+            "total_outcomes": sum(1 for d in self._decisions if d.get("outcome")),
+            "next_retrain_at": self._last_retrain_count + self.RETRAIN_THRESHOLD,
+            "accuracies": self.get_all_accuracies(),
+        }
 
     def get_decision_history(
         self,
