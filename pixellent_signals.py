@@ -58,7 +58,7 @@ DEFAULT_CONFIG = {
 # =============================================================================
 
 def load_stock(ticker: str, start: str = '2018-01-01') -> pd.DataFrame:
-    df = yf.download(ticker, start=start, auto_adjust=True, progress=False)
+    df = yf.download(ticker, start=start, progress=False)
     if df.empty:
         return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
@@ -74,7 +74,7 @@ def load_ihsg(start: str = '2018-01-01') -> pd.DataFrame:
     [A7] Return DataFrame dengan H/L agar ATR IHSG lebih akurat.
     Jika H/L tidak tersedia, fallback ke proxy dengan warning.
     """
-    df = yf.download('^JKSE', start=start, auto_adjust=True, progress=False)
+    df = yf.download('^JKSE', start=start, progress=False)
     if df.empty:
         return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):

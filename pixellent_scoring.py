@@ -595,7 +595,6 @@ class PixellentScorer:
             'eval_metric': 'logloss',
             'random_state': 42,
             'n_jobs': -1,
-            'use_label_encoder': False,
         }
         if xgb_params:
             default_params.update(xgb_params)

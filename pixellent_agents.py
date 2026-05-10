@@ -869,13 +869,11 @@ class MasterDecisionAgent:
 
         if risk_output and trend_output:
             risk_label = risk_output.factors.get("risk_label", "MEDIUM")
-            if risk_label == "EXTREME" and trend_output.score > 60:
-                # Risk override: cap the bullish signal
-                composite_score = min(composite_score, 55)
-                conflicts.append("RISK_OVERRIDE: Extreme risk caps bullish trend signal")
-
             if risk_label == "EXTREME":
+                # Risk override: cap bullish signals in extreme risk
                 composite_score = min(composite_score, 50)
+                if trend_output.score > 60:
+                    conflicts.append("RISK_OVERRIDE: Extreme risk caps bullish trend signal")
 
         # If SmartMoney shows strong distribution but Trend is bullish (divergence)
         sm_output = agent_outputs.get("SmartMoneyAgent")
