@@ -481,7 +481,7 @@ with tab_chart:
 
             # ── Chart Candlestick + MA + Sinyal ──
             buy_sig  = sig[sig['buy_raw']]
-            sell_sig = sig[sig['sell_raw']]
+            sell_sig = sig[sig['sell_raw_base']]
 
             fig = make_subplots(
                 rows=3, cols=1,
@@ -607,7 +607,7 @@ with tab_chart:
 
             with col_sig:
                 st.markdown("**📋 Status Sinyal Terakhir**")
-                sinyal_now = 'BELI' if last['buy_raw'] else ('JUAL' if last['sell_raw'] else 'Tunggu')
+                sinyal_now = 'BELI' if last['buy_raw'] else ('JUAL' if last['sell_signal'] else 'Tunggu')
                 entry_est  = last['open']
                 hard_stop  = entry_est * (1 - (stop_pct + gap_buffer) / 100)
                 target_est = max(
