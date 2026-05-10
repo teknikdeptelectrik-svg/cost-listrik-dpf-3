@@ -14,7 +14,6 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import random
 
 # ============================================================
 # PAGE CONFIG
@@ -387,7 +386,7 @@ def _get_sample_rebalancing():
 # SIDEBAR
 # ============================================================
 with st.sidebar:
-    st.image("https://via.placeholder.com/200x60/1a1a2e/00c853?text=PIXELLENT+AI", width=200)
+    st.markdown("### 🧠 PIXELLENT AI")
     st.markdown("### ⚙️ Settings")
     st.divider()
 
@@ -585,7 +584,7 @@ with tab2:
 
     display_cols = ["Ticker", "AI_Score", "SM_Score", "FF_Score", "Sinyal",
                     "Close", "R/R", "EMA_Stack", "Regime", "Sector", "Action"]
-    styled_df = filtered_df[display_cols].style.applymap(
+    styled_df = filtered_df[display_cols].style.map(
         style_scores, subset=["AI_Score", "SM_Score", "FF_Score"]
     ).format({
         "Close": "Rp {:,.0f}",
