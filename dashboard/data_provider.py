@@ -3,9 +3,13 @@ Data Provider Module - Connects dashboard to backend engines.
 Handles data fetching, caching (via st.cache_data), and fallback to mock data.
 
 Fixes Issues:
-- #1 (Critical): Connects to AgentOrchestrator & backend modules
+- #1 (Critical): Correct import paths after folder reorganization
 - #2 (Critical): Replaces random walk with backtest-based equity curve
-- #4 (Important): Uses @st.cache_data for performance
+- #3 (Important): Portfolio data connected to DB when available
+- #4 (Important): Risk data calculated from actual portfolio
+- #5 (Minor): Mock agent decisions handle all tickers (no 7-limit)
+- #6 (Important): ADX calculated from actual price data
+- Uses @st.cache_data for performance
 """
 
 import streamlit as st
@@ -18,49 +22,109 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 # ─── Backend imports with graceful fallback ─────────────────────────────────
+# [FIX #1] Correct import paths after folder reorganization
 try:
-    from pixellent_agents import AgentOrchestrator, FullAnalysis
+    from core.pixellent_agents import AgentOrchestrator, FullAnalysis
     HAS_AGENTS = True
 except ImportError:
     HAS_AGENTS = False
-    logger.warning("pixellent_agents not available")
+    logger.warning("core.pixellent_agents not available")
 
 try:
-    from pixellent_scoring import PixellentScorer, score_stock, build_features
+    from modules.pixellent_scoring import PixellentScorer, score_stock, build_features
     HAS_SCORING = True
 except ImportError:
     HAS_SCORING = False
-    logger.warning("pixellent_scoring not available")
+    logger.warning("modules.pixellent_scoring not available")
 
 try:
-    from pixellent_signals import (
+    from core.pixellent_signals import (
         compute_signals, load_stock, load_ihsg, screen_all, detect_regime
     )
     HAS_SIGNALS = True
 except ImportError:
     HAS_SIGNALS = False
-    logger.warning("pixellent_signals not available")
+    logger.warning("core.pixellent_signals not available")
 
 try:
-    from pixellent_backtesting import (
+    from portfolio.pixellent_backtesting import (
         compute_trade_metrics, generate_historical_labels
     )
     HAS_BACKTEST = True
 except ImportError:
     HAS_BACKTEST = False
-    logger.warning("pixellent_backtesting not available")
+    logger.warning("portfolio.pixellent_backtesting not available")
 
 try:
-    from pixellent_foreignflow import analyze_stock_foreign_flow, get_sector
+    from modules.pixellent_foreignflow import analyze_stock_foreign_flow, get_sector
     HAS_FF = True
 except ImportError:
     HAS_FF = False
 
 try:
-    from pixellent_regime_enhanced import detect_regime_enhanced
+    from modules.pixellent_regime_enhanced import detect_regime_enhanced
     HAS_REGIME = True
 except ImportError:
     HAS_REGIME = False
+
+try:
+    from data.pixellent_db_loader import get_db_engine, load_stock_db, load_ihsg_db
+    HAS_DB = True
+except ImportError:
+    HAS_DB = False
+    logger.warning("data.pixellent_db_loader not available")
+
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+# [FIX #2] Position size configurable (was hardcoded 0.3)
+POSITION_SIZE_PCT = 0.20  # 20% of capital per trade (adjustable)
+
+
+# =============================================================================
+# UTILITY: ADX CALCULATION
+# =============================================================================
+
+def _compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """
+    [FIX #6] Calculate Average Directional Index from OHLC data.
+    Returns ADX series (0-100 scale).
+    """
+    high = df['high'] if 'high' in df.columns else df.get('High', pd.Series(dtype=float))
+    low = df['low'] if 'low' in df.columns else df.get('Low', pd.Series(dtype=float))
+    close = df['close'] if 'close' in df.columns else df.get('Close', pd.Series(dtype=float))
+
+    if high.empty or low.empty or close.empty:
+        return pd.Series(25.0, index=df.index)  # fallback
+
+    # True Range
+    h_l = high - low
+    h_pc = (high - close.shift(1)).abs()
+    l_pc = (low - close.shift(1)).abs()
+    tr = pd.concat([h_l, h_pc, l_pc], axis=1).max(axis=1)
+
+    # Directional Movement
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    plus_dm = pd.Series(plus_dm, index=df.index)
+    minus_dm = pd.Series(minus_dm, index=df.index)
+
+    # Smoothed averages (Wilder's smoothing = EWM with alpha=1/period)
+    atr_smooth = tr.ewm(alpha=1/period, adjust=False).mean()
+    plus_di = 100 * (plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr_smooth)
+    minus_di = 100 * (minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr_smooth)
+
+    # DX and ADX
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx = dx.ewm(alpha=1/period, adjust=False).mean()
+
+    return adx.fillna(25.0)
 
 
 # =============================================================================
@@ -140,7 +204,7 @@ def get_agent_decisions(tickers: List[str]) -> pd.DataFrame:
                         "price_vs_ema8": float((last['close'] / last['ma8'] - 1) * 100) if last.get('ma8', 0) > 0 else 0,
                         "price_vs_ema21": float((last['close'] / last['ma21'] - 1) * 100) if last.get('ma21', 0) > 0 else 0,
                         "price_vs_ema55": float((last['close'] / last['ma55'] - 1) * 100) if last.get('ma55', 0) > 0 else 0,
-                        "adx": 25.0,  # ADX not in current signals, use default
+                        "adx": float(_compute_adx(sig).iloc[-1]) if len(sig) > 14 else 25.0,
                         "regime": str(last.get('regime', 'SIDEWAYS')),
                         "atr_ratio": float(last.get('atr14', 0) / sig['atr14'].rolling(21).mean().iloc[-1]) if sig['atr14'].rolling(21).mean().iloc[-1] > 0 else 1.0,
                         "volatility_20d": float(sig['close'].pct_change().rolling(20).std().iloc[-1] * np.sqrt(252) * 100) if len(sig) > 20 else 25.0,
@@ -229,7 +293,7 @@ def get_equity_curve(initial_capital: float = 2_000_000_000) -> pd.DataFrame:
                         returns = labels_df.loc[valid, 'actual_return_pct'].fillna(0)
                         # Build equity curve from actual returns
                         dates = labels_df.loc[valid].index
-                        daily_returns = returns / 100 * 0.3  # Scale: 30% of capital per trade
+                        daily_returns = returns / 100 * POSITION_SIZE_PCT  # [FIX #2] Configurable position size
                         equity = initial_capital * (1 + daily_returns).cumprod()
                         return pd.DataFrame({"Date": dates, "Equity": equity.values})
         except Exception as e:
@@ -254,8 +318,37 @@ def get_equity_curve(initial_capital: float = 2_000_000_000) -> pd.DataFrame:
 
 @st.cache_data(ttl=60)
 def get_portfolio_data() -> pd.DataFrame:
-    """Get portfolio positions (from DB/state or mock)."""
-    # In production, this would read from database
+    """
+    [FIX #3] Get portfolio positions from database when available,
+    fallback to hardcoded demo data.
+    """
+    # Attempt to load from database
+    if HAS_DB:
+        try:
+            engine = get_db_engine()
+            query = """
+                SELECT ticker, lots, entry_price, current_price, sector,
+                       ai_score, days_held
+                FROM portfolio_positions
+                WHERE status = 'OPEN'
+                ORDER BY ai_score DESC
+            """
+            df = pd.read_sql(query, engine)
+            if not df.empty:
+                df = df.rename(columns={
+                    "ticker": "Ticker", "lots": "Lots",
+                    "entry_price": "Entry", "current_price": "Current",
+                    "sector": "Sector", "ai_score": "AI_Score",
+                    "days_held": "Days_Held",
+                })
+                df["Market_Value"] = df["Current"] * df["Lots"] * 100
+                df["PnL_Pct"] = round((df["Current"] - df["Entry"]) / df["Entry"] * 100, 2)
+                df["PnL_Rp"] = (df["Current"] - df["Entry"]) * df["Lots"] * 100
+                return df
+        except Exception as e:
+            logger.warning(f"DB portfolio load failed, using fallback: {e}")
+
+    # Fallback to demo data
     positions = [
         {"Ticker": "BBCA", "Lots": 50, "Entry": 9200, "Current": 9875,
          "Sector": "Banking", "AI_Score": 88.3, "Days_Held": 15},
@@ -277,7 +370,35 @@ def get_portfolio_data() -> pd.DataFrame:
 
 @st.cache_data(ttl=60)
 def get_portfolio_summary() -> Dict[str, Any]:
-    """Get portfolio summary metrics."""
+    """
+    [FIX #3] Get portfolio summary metrics — calculated from actual positions
+    when available.
+    """
+    # Try to compute from actual portfolio data
+    try:
+        portfolio_df = get_portfolio_data()
+        if not portfolio_df.empty:
+            total_invested = portfolio_df["Market_Value"].sum()
+            total_pnl = portfolio_df["PnL_Rp"].sum()
+            total_capital = 2_000_000_000  # Could also come from DB/config
+            cash = total_capital - total_invested
+            total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
+            unrealized_pnl = total_pnl  # All open positions = unrealized
+            unrealized_pnl_pct = total_pnl_pct
+
+            return {
+                "total_capital": total_capital,
+                "total_invested": int(total_invested),
+                "cash": int(cash),
+                "total_pnl": int(total_pnl),
+                "total_pnl_pct": round(total_pnl_pct, 2),
+                "unrealized_pnl": int(unrealized_pnl),
+                "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
+            }
+    except Exception as e:
+        logger.warning(f"Portfolio summary calculation failed: {e}")
+
+    # Fallback
     return {
         "total_capital": 2_000_000_000,
         "total_invested": 1_450_000_000,
@@ -296,13 +417,60 @@ def get_portfolio_summary() -> Dict[str, Any]:
 @st.cache_data(ttl=120)
 def get_risk_data(risk_tolerance: int = 5) -> Dict[str, Any]:
     """
-    Get risk monitoring data. Risk tolerance affects alert thresholds.
+    [FIX #4] Get risk monitoring data — sector concentration & position weights
+    calculated from actual portfolio, not hardcoded.
+    Risk tolerance affects alert thresholds.
     """
     # Adjust limits based on risk tolerance (1=conservative, 10=aggressive)
     max_sector = 30 + risk_tolerance * 2  # 32% to 50%
     max_position = 25 + risk_tolerance * 2  # 27% to 45%
     max_dd_limit = -(5 + risk_tolerance)   # -6% to -15%
 
+    # [FIX #4] Calculate from actual portfolio data
+    try:
+        portfolio_df = get_portfolio_data()
+        if not portfolio_df.empty:
+            total_value = portfolio_df["Market_Value"].sum()
+
+            # Sector concentration — calculated from actual holdings
+            sector_values = portfolio_df.groupby("Sector")["Market_Value"].sum()
+            sector_concentration = {
+                sector: round(value / total_value * 100, 1)
+                for sector, value in sector_values.items()
+            }
+
+            # Position weights — calculated from actual holdings
+            position_weights = {
+                row["Ticker"]: round(row["Market_Value"] / total_value * 100, 1)
+                for _, row in portfolio_df.iterrows()
+            }
+
+            # Current drawdown from portfolio PnL
+            total_pnl_pct = portfolio_df["PnL_Rp"].sum() / total_value * 100 if total_value > 0 else 0
+            max_dd_current = round(min(total_pnl_pct, 0), 1) if total_pnl_pct < 0 else round(-abs(portfolio_df["PnL_Pct"].min()), 1)
+
+            # VaR estimation (simple parametric, 95% confidence)
+            position_returns = portfolio_df["PnL_Pct"] / 100
+            portfolio_std = position_returns.std() if len(position_returns) > 1 else 0.02
+            var_1day = int(-1.645 * portfolio_std * total_value)
+            var_5day = int(var_1day * np.sqrt(5))
+
+            return {
+                "risk_score": _calculate_risk_score(sector_concentration, position_weights, max_sector, max_position),
+                "var_1day": var_1day,
+                "var_5day": var_5day,
+                "max_drawdown_current": max_dd_current,
+                "max_drawdown_limit": max_dd_limit,
+                "sector_concentration": sector_concentration,
+                "position_weights": position_weights,
+                "alerts": _generate_risk_alerts_dynamic(sector_concentration, position_weights, max_sector, max_position),
+                "max_sector_limit": max_sector,
+                "max_position_limit": max_position,
+            }
+    except Exception as e:
+        logger.warning(f"Dynamic risk calculation failed: {e}")
+
+    # Fallback (should rarely hit this)
     return {
         "risk_score": 42,
         "var_1day": -28_500_000,
@@ -310,18 +478,12 @@ def get_risk_data(risk_tolerance: int = 5) -> Dict[str, Any]:
         "max_drawdown_current": -3.2,
         "max_drawdown_limit": max_dd_limit,
         "sector_concentration": {
-            "Banking": 45.2,
-            "Consumer": 28.1,
-            "Telecom": 15.3,
-            "Pharma": 6.8,
-            "Basic Industry": 4.6,
+            "Banking": 45.2, "Consumer": 28.1, "Telecom": 15.3,
+            "Pharma": 6.8, "Basic Industry": 4.6,
         },
         "position_weights": {
-            "BBCA": 31.2,
-            "BMRI": 24.8,
-            "ICBP": 18.5,
-            "TLKM": 14.2,
-            "INDF": 11.3,
+            "BBCA": 31.2, "BMRI": 24.8, "ICBP": 18.5,
+            "TLKM": 14.2, "INDF": 11.3,
         },
         "alerts": _generate_risk_alerts(max_sector, max_position),
         "max_sector_limit": max_sector,
@@ -329,8 +491,61 @@ def get_risk_data(risk_tolerance: int = 5) -> Dict[str, Any]:
     }
 
 
+def _calculate_risk_score(
+    sector_conc: Dict[str, float],
+    position_weights: Dict[str, float],
+    max_sector: float,
+    max_position: float,
+) -> int:
+    """Calculate overall risk score (0-100, higher = riskier)."""
+    score = 0
+    # Sector concentration risk
+    max_sector_actual = max(sector_conc.values()) if sector_conc else 0
+    score += min(max_sector_actual / max_sector * 40, 40)
+    # Position concentration risk
+    max_pos_actual = max(position_weights.values()) if position_weights else 0
+    score += min(max_pos_actual / max_position * 30, 30)
+    # Number of positions (fewer = riskier)
+    n_positions = len(position_weights)
+    if n_positions <= 3:
+        score += 30
+    elif n_positions <= 5:
+        score += 20
+    elif n_positions <= 8:
+        score += 10
+    return min(int(score), 100)
+
+
+def _generate_risk_alerts_dynamic(
+    sector_conc: Dict[str, float],
+    position_weights: Dict[str, float],
+    max_sector: float,
+    max_position: float,
+) -> List[Dict]:
+    """[FIX #4] Generate alerts from actual portfolio concentration."""
+    alerts = []
+    for sector, pct in sector_conc.items():
+        if pct > max_sector:
+            alerts.append({
+                "level": "CRITICAL",
+                "message": f"Sector {sector} concentration {pct:.1f}% exceeds limit {max_sector:.0f}%"
+            })
+    for ticker, pct in position_weights.items():
+        if pct > max_position:
+            alerts.append({
+                "level": "CRITICAL",
+                "message": f"Position {ticker} weight {pct:.1f}% exceeds limit {max_position:.0f}%"
+            })
+        elif pct > max_position * 0.9:
+            alerts.append({
+                "level": "WARNING",
+                "message": f"Position {ticker} weight {pct:.1f}% near limit {max_position:.0f}%"
+            })
+    return alerts
+
+
 def _generate_risk_alerts(max_sector: float, max_position: float) -> List[Dict]:
-    """Generate alerts based on current limits."""
+    """Fallback alert generator for hardcoded data."""
     alerts = []
     if 45.2 > max_sector:
         alerts.append({
@@ -487,7 +702,10 @@ def _mock_screening_data() -> pd.DataFrame:
 
 
 def _mock_agent_decisions(tickers: List[str]) -> pd.DataFrame:
-    """Fixed mock agent decisions - no randomness, uses weighted scoring."""
+    """
+    [FIX #5] Fixed mock agent decisions — no randomness, uses weighted scoring.
+    Now handles ALL tickers (no 7-ticker limit).
+    """
     reasoning_templates = [
         "EMA stack bullish with strong volume confirmation. Smart money accumulation detected in last 5 sessions. Foreign flow positive Rp 45.2B MTD.",
         "Sideways regime with declining volume. No clear smart money signal. Hold position with tight trailing stop at -3%.",
@@ -496,20 +714,36 @@ def _mock_agent_decisions(tickers: List[str]) -> pd.DataFrame:
         "Mixed signals: technical bullish but foreign flow negative. Agent conflict between Trend (BUY) and Risk (HOLD). Conservative sizing recommended.",
         "Breakout from consolidation with volume surge 2.3x average. Smart money entry detected. Strong buy with R/R 3.2:1.",
         "Downtrend confirmed. Smart money distribution pattern. Macro headwinds from rising rates. Sell signal with stop above resistance.",
+        "Consolidation phase with narrowing Bollinger Bands. Awaiting breakout direction. Volume declining suggests accumulation.",
+        "Sector rotation favoring this stock. Relative strength improving vs IHSG. Foreign inflow accelerating past 3 sessions.",
+        "Late-stage uptrend. RSI divergence forming. Consider trailing stop tightening. Partial profit lock recommended.",
     ]
 
-    # Fixed scores for each ticker (deterministic)
+    # Fixed scores for known tickers (deterministic)
     fixed_data = {
         "BBCA": (82, 76, 72, 68), "BMRI": (78, 71, 68, 65),
         "ICBP": (74, 62, 70, 58), "TLKM": (48, 45, 55, 52),
         "INDF": (72, 65, 66, 60), "BBRI": (80, 73, 70, 66),
-        "ASII": (38, 35, 42, 40),
+        "ASII": (38, 35, 42, 40), "KLBF": (65, 58, 62, 55),
+        "UNVR": (55, 48, 58, 50), "SMGR": (42, 38, 45, 40),
+        "ANTM": (60, 55, 52, 48), "PGAS": (58, 52, 56, 50),
+        "ADRO": (68, 62, 60, 55), "EXCL": (52, 48, 55, 50),
+        "MNCN": (45, 40, 48, 42),
     }
 
+    # [FIX #5] Default scores for unknown tickers (hash-based for determinism)
+    def _get_scores(ticker_clean: str) -> Tuple[int, int, int, int]:
+        if ticker_clean in fixed_data:
+            return fixed_data[ticker_clean]
+        # Generate deterministic scores based on ticker name hash
+        h = sum(ord(c) for c in ticker_clean)
+        base = 40 + (h % 35)  # Range 40-74
+        return (base, base - 5, base + 2, base - 8)
+
     decisions = []
-    for i, ticker in enumerate(tickers[:7]):
+    for i, ticker in enumerate(tickers):  # [FIX #5] No more [:7] limit
         ticker_clean = ticker.replace('.JK', '')
-        scores = fixed_data.get(ticker_clean, (55, 50, 55, 50))
+        scores = _get_scores(ticker_clean)
         trend_s, sm_s, risk_s, macro_s = scores
 
         # Weighted ensemble (not simple average!)
@@ -531,7 +765,6 @@ def _mock_agent_decisions(tickers: List[str]) -> pd.DataFrame:
         conflict = abs(trend_s - risk_s) > 25 or abs(sm_s - macro_s) > 30
         confidence = min(weighted_score / 100 * 1.1, 0.98) * 100
 
-        # Fix #9: Use modulo to prevent index out of range
         template_idx = i % len(reasoning_templates)
 
         decisions.append({
