@@ -13,6 +13,12 @@ Feature Categories (6):
     5. Liquidity   — RVOL, avg trade size, value turnover, spread proxy
     6. Risk        — ATR ratio, drawdown, volatility regime, R/R ratio
 
+Important:
+    This model ONLY predicts the probability of a BUY signal being successful
+    (i.e., price reaching >= target_pct gain within max_bars). It does NOT
+    generate SELL/EXIT signals or predict downside. For sell/exit logic,
+    use separate modules (e.g., trailing stop, risk management).
+
 Usage:
     from pixellent_scoring import PixellentScorer, score_stock
 
@@ -52,7 +58,6 @@ try:
         accuracy_score, precision_score, recall_score, f1_score,
         roc_auc_score, brier_score_loss, log_loss
     )
-    from sklearn.preprocessing import StandardScaler
     HAS_SKLEARN = True
 except ImportError:
     HAS_SKLEARN = False
@@ -357,9 +362,11 @@ def generate_labels(
     max_bars: int = 15,
 ) -> pd.Series:
     """
-    Generate binary labels for buy signals.
+    Generate binary labels for BUY signals only.
+
     For each buy signal bar, check if price went up >= target_pct%
-    within max_bars bars.
+    within max_bars bars. This produces labels for training a model that
+    predicts BUY success probability. It does NOT label SELL or HOLD signals.
 
     Args:
         signal_df: Output of compute_signals() with 'buy_signal' and 'close'.
@@ -368,7 +375,7 @@ def generate_labels(
 
     Returns:
         Series of 0/1 labels aligned with signal_df index.
-        NaN for bars without buy signal.
+        NaN for bars without buy signal (majority of bars).
     """
     c = signal_df['close']
     buy = signal_df.get('buy_signal', pd.Series(False, index=c.index))
@@ -433,12 +440,8 @@ def heuristic_score(feat_df: pd.DataFrame) -> pd.DataFrame:
         ).clip(0, 1)
 
     ff_score = feat_df.get('feat_ff_score', pd.Series(0.5, index=feat_df.index))
-    if isinstance(ff_score, (int, float)):
-        ff_score = pd.Series(ff_score, index=feat_df.index)
 
     liq_score = feat_df.get('feat_liquidity_score', pd.Series(0.5, index=feat_df.index))
-    if isinstance(liq_score, (int, float)):
-        liq_score = pd.Series(liq_score, index=feat_df.index)
 
     # Risk penalty (higher risk = lower score)
     risk_penalty = pd.Series(0.0, index=feat_df.index)
@@ -691,9 +694,24 @@ class PixellentScorer:
             probs = self.model.predict_proba(X)[:, 1]
 
         # Compute confidence (based on feature completeness and model certainty)
-        # High confidence when: prob near 0 or 1, features are non-zero
+        # High confidence when: prob near 0 or 1, and mandatory features are available
         certainty = np.abs(probs - 0.5) * 2  # 0=uncertain, 1=certain
-        feature_completeness = (X != 0).mean(axis=1).values
+
+        # Only check completeness on features that should NOT be zero when data exists.
+        # Exclude binary flags and optional features that are legitimately zero.
+        _optional_features = {
+            'feat_ema_full', 'feat_ema_half', 'feat_ha_bull', 'feat_ac_naik',
+            'feat_close_above_ma21', 'feat_close_above_ma55',
+            'feat_regime_trending', 'feat_regime_sideways', 'feat_regime_highvol',
+            'feat_ff_net_pct', 'feat_ff_cum5d_norm', 'feat_ff_cum20d_norm',
+            'feat_ff_momentum_norm', 'feat_ff_streak', 'feat_ff_participation',
+            'feat_obv_trend',
+        }
+        mandatory_cols = [c for c in X.columns if c not in _optional_features]
+        if mandatory_cols:
+            feature_completeness = (X[mandatory_cols] != 0).mean(axis=1).values
+        else:
+            feature_completeness = np.ones(len(X))
         confidence = (certainty * 0.6 + feature_completeness * 0.4).clip(0, 1)
 
         result = pd.DataFrame(index=features_df.index)
