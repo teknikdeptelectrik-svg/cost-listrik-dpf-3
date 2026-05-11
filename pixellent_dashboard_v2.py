@@ -110,6 +110,25 @@ st.markdown("""
 # ============================================================
 # HELPER FUNCTIONS
 # ============================================================
+import html as html_module
+
+
+def sanitize_html(text):
+    """Sanitize text for safe HTML embedding."""
+    if text is None:
+        return ""
+    return html_module.escape(str(text))
+
+
+def hex_to_rgba(hex_color, alpha=1.0):
+    """Convert hex color (#RRGGBB) to rgba() string."""
+    hex_color = hex_color.lstrip("#")
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
 def format_rupiah(value):
     """Format number as Indonesian Rupiah."""
     if abs(value) >= 1_000_000_000:
@@ -150,7 +169,57 @@ def signal_badge(signal):
         "STRONG_SELL": "badge-red",
     }
     cls = colors.get(signal, "badge-yellow")
-    return f'<span class="{cls}">{signal}</span>'
+    return f'<span class="{cls}">{sanitize_html(signal)}</span>'
+
+
+def render_metric_card(label, value, subtitle="", color="#ffffff", font_size="2.2rem"):
+    """Render a metric card HTML block."""
+    return f"""
+    <div class="metric-card">
+        <div class="metric-label">{sanitize_html(label)}</div>
+        <div class="metric-value" style="color: {color}; font-size: {font_size};">{value}</div>
+        <div style="font-size: 0.8rem; color: rgba(200,200,220,0.6);">{sanitize_html(subtitle)}</div>
+    </div>
+    """
+
+
+def render_decision_badge(decision, color):
+    """Render a decision badge with proper rgba background."""
+    bg_color = hex_to_rgba(color, 0.13)
+    return f"""
+    <div style="text-align: center; padding: 8px;">
+        <span style="background: {bg_color}; color: {color}; padding: 8px 16px;
+                     border-radius: 20px; font-weight: bold; font-size: 1.1rem;">
+            {sanitize_html(decision)}
+        </span>
+    </div>
+    """
+
+
+def render_rebalancing_card(suggestion):
+    """Render a rebalancing suggestion card."""
+    urgency_badge = "badge-red" if suggestion["urgency"] == "HIGH" else "badge-yellow"
+    action_color = "#f44336" if suggestion["action"] == "SELL" else "#ffc107" if suggestion["action"] == "REDUCE" else "#00c853"
+    return f"""
+    <div style="background: rgba(40,40,60,0.5); border-radius: 8px; padding: 12px; margin: 8px 0;
+                border-left: 4px solid {action_color};">
+        <span class="{urgency_badge}">{sanitize_html(suggestion['urgency'])}</span>
+        <strong style="margin-left: 8px;">{sanitize_html(suggestion['action'])} {sanitize_html(suggestion['ticker'])}</strong>
+        <p style="margin: 8px 0 0 0; font-size: 0.9rem; color: rgba(200,200,220,0.7);">{sanitize_html(suggestion['reason'])}</p>
+    </div>
+    """
+
+
+def render_alert_box(alert):
+    """Render a risk alert box."""
+    alert_class = "alert-critical" if alert["level"] == "CRITICAL" else "alert-warning"
+    badge_class = "badge-red" if alert["level"] == "CRITICAL" else "badge-yellow"
+    return f"""
+    <div class="{alert_class}">
+        <span class="{badge_class}">{sanitize_html(alert['level'])}</span>
+        <span style="margin-left: 10px;">{sanitize_html(alert['message'])}</span>
+    </div>
+    """
 
 
 
@@ -424,6 +493,8 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ============================================================
 with tab1:
     st.markdown("## Market Summary")
+    st.info("ℹ️ **Overview Global** — Tab ini menampilkan ringkasan keseluruhan pasar tanpa filter. "
+            "Untuk screening dengan filter spesifik, gunakan tab 🔍 Screening.")
 
     # Top Metrics Row
     col1, col2, col3, col4 = st.columns(4)
@@ -435,46 +506,22 @@ with tab1:
 
     with col1:
         color = "#00c853" if ai_market_score > 70 else "#ffc107" if ai_market_score > 50 else "#f44336"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">AI Market Score</div>
-            <div class="metric-value" style="color: {color};">{ai_market_score}</div>
-            <div style="font-size: 0.8rem; color: rgba(200,200,220,0.6);">out of 100</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(render_metric_card("AI Market Score", ai_market_score, "out of 100", color), unsafe_allow_html=True)
 
     with col2:
         regime_colors = {"TRENDING": "#00c853", "SIDEWAYS": "#ffc107", "HIGH_VOL": "#f44336"}
         r_color = regime_colors.get(market_regime, "#ffc107")
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Market Regime</div>
-            <div class="metric-value" style="color: {r_color}; font-size: 1.5rem;">{market_regime}</div>
-            <div style="font-size: 0.8rem; color: rgba(200,200,220,0.6);">Current Phase</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(render_metric_card("Market Regime", market_regime, "Current Phase", r_color, "1.5rem"), unsafe_allow_html=True)
 
     with col3:
         ff_color = "#00c853" if foreign_flow_net > 0 else "#f44336"
         ff_sign = "+" if foreign_flow_net > 0 else ""
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Foreign Flow Net</div>
-            <div class="metric-value" style="color: {ff_color}; font-size: 1.5rem;">{ff_sign}Rp {foreign_flow_net/1_000_000_000:.1f}B</div>
-            <div style="font-size: 0.8rem; color: rgba(200,200,220,0.6);">Month to Date</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(render_metric_card("Foreign Flow Net", f"{ff_sign}Rp {foreign_flow_net/1_000_000_000:.1f}B", "Month to Date", ff_color, "1.5rem"), unsafe_allow_html=True)
 
     with col4:
         pnl_color = "#00c853" if portfolio_pnl_pct > 0 else "#f44336"
         pnl_sign = "+" if portfolio_pnl_pct > 0 else ""
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Portfolio P&L</div>
-            <div class="metric-value" style="color: {pnl_color};">{pnl_sign}{portfolio_pnl_pct:.2f}%</div>
-            <div style="font-size: 0.8rem; color: rgba(200,200,220,0.6);">Total Return</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(render_metric_card("Portfolio P&L", f"{pnl_sign}{portfolio_pnl_pct:.2f}%", "Total Return", pnl_color), unsafe_allow_html=True)
 
     st.markdown("")
 
@@ -584,7 +631,7 @@ with tab2:
 
     display_cols = ["Ticker", "AI_Score", "SM_Score", "FF_Score", "Sinyal",
                     "Close", "R/R", "EMA_Stack", "Regime", "Sector", "Action"]
-    styled_df = filtered_df[display_cols].style.map(
+    styled_df = filtered_df[display_cols].style.applymap(
         style_scores, subset=["AI_Score", "SM_Score", "FF_Score"]
     ).format({
         "Close": "Rp {:,.0f}",
@@ -686,7 +733,8 @@ with tab3:
 
             submitted = st.form_submit_button("Calculate")
             if submitted:
-                risk_per_trade = summary["total_capital"] * 0.02  # 2% risk
+                risk_pct = risk_tolerance / 100  # Use sidebar risk_tolerance (1-10 → 1%-10%)
+                risk_per_trade = summary["total_capital"] * risk_pct
                 risk_per_share = ps_price - ps_sl
                 if risk_per_share > 0:
                     max_shares = int(risk_per_trade / risk_per_share)
@@ -696,7 +744,7 @@ with tab3:
                     **Recommended Position:**
                     - Max Lots: **{max_lots}** ({max_lots * 100} shares)
                     - Position Value: **{format_rupiah(position_value)}**
-                    - Risk Amount: **{format_rupiah(risk_per_trade)}** (2% of capital)
+                    - Risk Amount: **{format_rupiah(risk_per_trade)}** ({risk_tolerance}% of capital)
                     - Risk/Share: **Rp {risk_per_share:,.0f}**
                     """)
                 else:
@@ -708,17 +756,7 @@ with tab3:
     rebalancing = _get_sample_rebalancing()
 
     for suggestion in rebalancing:
-        urgency_badge = "badge-red" if suggestion["urgency"] == "HIGH" else "badge-yellow"
-        action_color = "#f44336" if suggestion["action"] == "SELL" else "#ffc107" if suggestion["action"] == "REDUCE" else "#00c853"
-
-        st.markdown(f"""
-        <div style="background: rgba(40,40,60,0.5); border-radius: 8px; padding: 12px; margin: 8px 0;
-                    border-left: 4px solid {action_color};">
-            <span class="{urgency_badge}">{suggestion['urgency']}</span>
-            <strong style="margin-left: 8px;">{suggestion['action']} {suggestion['ticker']}</strong>
-            <p style="margin: 8px 0 0 0; font-size: 0.9rem; color: rgba(200,200,220,0.7);">{suggestion['reason']}</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(render_rebalancing_card(suggestion), unsafe_allow_html=True)
 
 
 
@@ -736,43 +774,20 @@ with tab4:
     with risk_col1:
         rs = risk_data["risk_score"]
         rs_color = "#00c853" if rs < 40 else "#ffc107" if rs < 70 else "#f44336"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Risk Score</div>
-            <div class="metric-value" style="color: {rs_color};">{rs}/100</div>
-            <div style="font-size: 0.8rem; color: rgba(200,200,220,0.6);">{'LOW' if rs < 40 else 'MODERATE' if rs < 70 else 'HIGH'}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        rs_label = 'LOW' if rs < 40 else 'MODERATE' if rs < 70 else 'HIGH'
+        st.markdown(render_metric_card("Risk Score", f"{rs}/100", rs_label, rs_color), unsafe_allow_html=True)
 
     with risk_col2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">VaR 1-Day (95%)</div>
-            <div class="metric-value" style="color: #f44336; font-size: 1.4rem;">{format_rupiah(risk_data['var_1day'])}</div>
-            <div style="font-size: 0.8rem; color: rgba(200,200,220,0.6);">Maximum Expected Loss</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(render_metric_card("VaR 1-Day (95%)", format_rupiah(risk_data['var_1day']), "Maximum Expected Loss", "#f44336", "1.4rem"), unsafe_allow_html=True)
 
     with risk_col3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">VaR 5-Day (95%)</div>
-            <div class="metric-value" style="color: #ff9800; font-size: 1.4rem;">{format_rupiah(risk_data['var_5day'])}</div>
-            <div style="font-size: 0.8rem; color: rgba(200,200,220,0.6);">Weekly Risk Exposure</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(render_metric_card("VaR 5-Day (95%)", format_rupiah(risk_data['var_5day']), "Weekly Risk Exposure", "#ff9800", "1.4rem"), unsafe_allow_html=True)
 
     with risk_col4:
         dd_pct = risk_data["max_drawdown_current"]
         dd_limit = risk_data["max_drawdown_limit"]
         dd_usage = abs(dd_pct / dd_limit) * 100
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Max Drawdown</div>
-            <div class="metric-value" style="color: #ffc107; font-size: 1.4rem;">{dd_pct}%</div>
-            <div style="font-size: 0.8rem; color: rgba(200,200,220,0.6);">Limit: {dd_limit}% ({dd_usage:.0f}% used)</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(render_metric_card("Max Drawdown", f"{dd_pct}%", f"Limit: {dd_limit}% ({dd_usage:.0f}% used)", "#ffc107", "1.4rem"), unsafe_allow_html=True)
 
     st.markdown("")
 
@@ -813,14 +828,7 @@ with tab4:
     with alerts_col:
         st.markdown("### 🚨 Risk Alerts")
         for alert in risk_data["alerts"]:
-            alert_class = "alert-critical" if alert["level"] == "CRITICAL" else "alert-warning"
-            badge_class = "badge-red" if alert["level"] == "CRITICAL" else "badge-yellow"
-            st.markdown(f"""
-            <div class="{alert_class}">
-                <span class="{badge_class}">{alert['level']}</span>
-                <span style="margin-left: 10px;">{alert['message']}</span>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(render_alert_box(alert), unsafe_allow_html=True)
 
         st.markdown("")
         st.info("💡 **Recommendation:** Reduce Banking sector exposure by selling partial BBCA position to bring concentration below 40% limit.")
@@ -893,6 +901,9 @@ with tab4:
 with tab5:
     st.markdown("## 🤖 Multi-Agent Decision Panel")
     st.markdown("Each stock is evaluated by 4 specialized AI agents. The Master Decision combines their insights.")
+    st.warning("⚠️ **SIMULASI** — Data berikut adalah simulasi sederhana (rata-rata skor). "
+               "Pada sistem nyata, keputusan ditentukan oleh AgentOrchestrator dengan pembobotan, "
+               "deteksi konflik, dan risk override.")
 
     agent_df = _get_sample_agent_decisions()
 
@@ -911,7 +922,7 @@ with tab5:
         header_col, decision_col, conf_col = st.columns([2, 1, 1])
 
         with header_col:
-            st.markdown(f"### {row['Ticker']}")
+            st.markdown(f"### {sanitize_html(row['Ticker'])}")
 
         with decision_col:
             decision_colors = {
@@ -919,14 +930,7 @@ with tab5:
                 "HOLD": "#ffc107", "SELL": "#ff9800", "STRONG_SELL": "#f44336"
             }
             d_color = decision_colors.get(row["Decision"], "#ffc107")
-            st.markdown(f"""
-            <div style="text-align: center; padding: 8px;">
-                <span style="background: {d_color}22; color: {d_color}; padding: 8px 16px;
-                             border-radius: 20px; font-weight: bold; font-size: 1.1rem;">
-                    {row['Decision']}
-                </span>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(render_decision_badge(row["Decision"], d_color), unsafe_allow_html=True)
 
         with conf_col:
             conf_color = "#00c853" if row["Confidence"] > 75 else "#ffc107" if row["Confidence"] > 50 else "#f44336"
@@ -994,7 +998,7 @@ with tab5:
             st.markdown(f"""
             <div class="reasoning-box">
                 <strong style="color: rgba(200,200,220,0.9);">💭 Reasoning:</strong><br>
-                <span style="color: rgba(200,200,220,0.7);">{row['Reasoning']}</span>
+                <span style="color: rgba(200,200,220,0.7);">{sanitize_html(row['Reasoning'])}</span>
             </div>
             """, unsafe_allow_html=True)
 
