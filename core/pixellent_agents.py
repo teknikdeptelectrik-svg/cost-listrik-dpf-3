@@ -135,9 +135,12 @@ class BaseAgent:
         raise NotImplementedError(f"{self.name}.analyze() not implemented")
 
     def _safe_get(self, data: Dict, key: str, default: Any = 0.0) -> Any:
-        """Safely get a value from data dict with default."""
+        """Safely get a value from data dict with default. Validates numeric types."""
         val = data.get(key, default)
         if val is None:
+            return default
+        # Type guard: if default is numeric, ensure val is also numeric
+        if isinstance(default, (int, float)) and not isinstance(val, (int, float)):
             return default
         return val
 
@@ -411,7 +414,8 @@ class SmartMoneyAgent(BaseAgent):
 
         # --- Bid/Offer Ratio (weight: 15%) ---
         bo_ratio = self._safe_get(data, "bid_offer_ratio", 1.0)
-        bo_score = np.clip((bo_ratio - 0.5) * 100 / 1.5, 0, 100)
+        # Center at 1.0 (neutral): bo_ratio=1.0→50, 1.5→75, 0.5→25
+        bo_score = np.clip((bo_ratio - 1.0) * 50 + 50, 0, 100)
         factors["bid_offer_score"] = round(bo_score, 1)
 
         if bo_ratio >= 1.5:
@@ -540,7 +544,8 @@ class RiskAgent(BaseAgent):
         # --- ATR Ratio (weight: 20%) ---
         atr_ratio = self._safe_get(data, "atr_ratio", 1.0)
         # Low ATR = calm market = safer; high ATR = volatile = riskier
-        atr_score = np.clip(100 - (atr_ratio - 0.5) * 50, 10, 95)
+        # Centered at atr_ratio=1.0 (average) = 50
+        atr_score = np.clip(100 - (atr_ratio - 1.0) * 50, 10, 95)
         factors["atr_score"] = round(atr_score, 1)
 
         if atr_ratio >= 2.0:
@@ -553,16 +558,17 @@ class RiskAgent(BaseAgent):
         # --- Volatility (weight: 15%) ---
         vol_20d = self._safe_get(data, "volatility_20d", 25.0)
         # IDX typical range: 15-50% annualized
-        # Low vol = safer
-        vol_score = np.clip(100 - (vol_20d - 10) * 2, 5, 95)
+        # Centered at 25% (typical IDX) = 50
+        vol_score = np.clip(100 - (vol_20d - 25) * 2, 5, 95)
         factors["volatility_score"] = round(vol_score, 1)
 
         # --- Drawdown (weight: 15%) ---
         drawdown = self._safe_get(data, "drawdown_pct", 0.0)
         # Drawdown is negative %; closer to 0 = safer
         # -5% is fine, -15% is bad, -30% is terrible
+        # drawdown=0 (no drawdown / unknown) → 65 (mildly safe, not max)
         dd_abs = abs(drawdown)
-        dd_score = np.clip(100 - dd_abs * 5, 5, 95)
+        dd_score = np.clip(65 - dd_abs * 3, 5, 95)
         factors["drawdown_score"] = round(dd_score, 1)
 
         if dd_abs >= 15:
@@ -572,8 +578,8 @@ class RiskAgent(BaseAgent):
 
         # --- Risk/Reward Ratio (weight: 15%) ---
         rr_ratio = self._safe_get(data, "rr_ratio", 1.0)
-        # R/R > 2 is good, > 3 is excellent
-        rr_score = np.clip(rr_ratio * 25, 10, 95)
+        # R/R = 1 is neutral (50), > 2 is good (75), > 3 is excellent (100)
+        rr_score = np.clip(50 + (rr_ratio - 1) * 25, 10, 95)
         factors["rr_score"] = round(rr_score, 1)
 
         if rr_ratio >= 3.0:
@@ -656,7 +662,7 @@ class MacroAgent(BaseAgent):
     """
     Evaluates macroeconomic favorability for a stock/sector.
 
-    Inputs: macro_score, sector_bias, sentiment_score, global_correlation
+    Inputs: macro_score, sector_bias, sentiment_score, bi_rate, inflation, fx
     Output: Macro favorability (0-100), sector_recommendation
     Logic: Combines macro + sentiment + sector sensitivity
     """
@@ -741,11 +747,11 @@ class MacroAgent(BaseAgent):
             reasoning_parts.append("BI Rate direction: hiking (headwind)")
 
         # Inflation
-        inflation_adj = {"low": 10, "moderate": 5, "high": -10, "very_high": -20}
+        inflation_adj = {"low": 10, "moderate": 0, "high": -10, "very_high": -20}
         global_score += inflation_adj.get(inflation_level, 0)
 
         # FX stability
-        fx_adj = {"stable": 5, "mild_weakness": -5, "sharp_depreciation": -20}
+        fx_adj = {"stable": 0, "mild_weakness": -5, "sharp_depreciation": -20}
         global_score += fx_adj.get(fx_stability, 0)
 
         global_score = np.clip(global_score, 0, 100)
@@ -888,11 +894,17 @@ class MasterDecisionAgent:
                 composite_score = min(composite_score, 50)
 
         # SmartMoney divergence is already detected in _detect_conflicts()
-        # as TREND_SM_GAP. Apply score penalty if that conflict exists.
+        # as TREND_SM_GAP. Apply symmetric score adjustment:
+        # - SM distributing (score<40) while trend bullish → reduce composite
+        # - SM accumulating (score>70) while trend weak → boost composite
         if any("TREND_SM_GAP" in c for c in conflicts):
             sm_output = agent_outputs.get("SmartMoneyAgent")
-            if sm_output and sm_output.score < 30:
-                composite_score -= 8  # Penalize when SM is actively distributing
+            if sm_output:
+                if sm_output.score < 40 and trend_output and trend_output.score > 60:
+                    penalty = min(8, (trend_output.score - sm_output.score - 30) * 0.3 + 4)
+                    composite_score -= penalty
+                elif sm_output.score > 70 and trend_output and trend_output.score < 40:
+                    composite_score += 5  # SM accumulating = early signal, slight boost
 
         composite_score = np.clip(composite_score, 0, 100)
 
@@ -2476,8 +2488,9 @@ class AdaptiveLearning:
 
         # Compute new weights proportional to accuracy, with floor.
         # Agents above 0.5 accuracy get boosted, below 0.5 get penalized,
-        # but never below MIN_WEIGHT.
+        # but never below MIN_WEIGHT and never above MAX_WEIGHT.
         MIN_WEIGHT = 0.10
+        MAX_WEIGHT = 0.50
         raw_weights = {}
         for name, acc in accuracies.items():
             # Transform: acc=0.5 → MIN_WEIGHT, acc=1.0 → 1.0
@@ -2485,9 +2498,12 @@ class AdaptiveLearning:
             adjusted = MIN_WEIGHT + (acc - 0.5) * (1.0 - MIN_WEIGHT) / 0.5
             raw_weights[name] = max(adjusted, MIN_WEIGHT)
 
-        # Normalize to sum = 1.0
+        # Normalize to sum = 1.0, then enforce MAX_WEIGHT cap
         total = sum(raw_weights.values())
-        new_weights = {k: v / total for k, v in raw_weights.items()}
+        new_weights = {k: min(v / total, MAX_WEIGHT) for k, v in raw_weights.items()}
+        # Re-normalize after capping
+        total2 = sum(new_weights.values())
+        new_weights = {k: v / total2 for k, v in new_weights.items()}
 
         # Apply to orchestrator
         for name, weight in new_weights.items():
