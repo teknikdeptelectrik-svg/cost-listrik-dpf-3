@@ -545,6 +545,333 @@ def classify_decision(ai_score: float, regime_risk: str = 'MEDIUM') -> dict:
 
 
 # ============================================================================
+# PHASE 5 INTEGRATION — AgentOrchestrator Bridge
+# ============================================================================
+
+def run_agent_analysis(
+    ticker: str,
+    signal_row: pd.Series,
+    extended_row: Optional[Dict[str, Any]] = None,
+    macro_data: Optional[Dict[str, Any]] = None,
+    sentiment_data: Optional[Dict[str, Any]] = None,
+    ml_score: Optional[float] = None,
+    portfolio=None,
+) -> Dict[str, Any]:
+    """
+    Run the Phase 5 AgentOrchestrator on a single stock's latest data.
+
+    This bridges the existing signal pipeline → AI Agent decision engine.
+    Converts signal_row (from compute_signals/screen_all) into the dict
+    format expected by AgentOrchestrator.run_analysis().
+
+    Args:
+        ticker: Stock ticker (e.g. "BBCA")
+        signal_row: Last row from compute_signals() DataFrame (pd.Series)
+        extended_row: Optional dict with SM/FF data (sm_score, ff_score, vpower, etc.)
+        macro_data: Optional dict with macro context (macro_score, market_score, etc.)
+        sentiment_data: Optional dict with sentiment_score
+        ml_score: Optional ML score from pixellent_scoring (overrides base score)
+        portfolio: Optional Portfolio instance for position sizing integration
+
+    Returns:
+        Dict with:
+          - action: str (STRONG_BUY/BUY/HOLD/SELL/STRONG_SELL)
+          - score: float (0-100)
+          - confidence: float (0-1)
+          - risk_level: str
+          - position_size: float (multiplier)
+          - position_lots: int (if portfolio provided)
+          - reasoning: str
+          - conflicts: list
+          - agent_scores: dict
+          - full_analysis: FullAnalysis object
+    """
+    try:
+        from pixellent_agents import AgentOrchestrator
+    except ImportError:
+        logger.error("Cannot import AgentOrchestrator from pixellent_agents")
+        return {"action": "HOLD", "score": 50.0, "confidence": 0.0,
+                "error": "AgentOrchestrator not available"}
+
+    # ── Convert signal_row → signal_data dict for TrendAgent + RiskAgent ──
+    signal_data = {}
+    if signal_row is not None and not signal_row.empty:
+        signal_data = {
+            "ema_status": str(signal_row.get("ema_status", "NEUTRAL")).upper(),
+            "trend_age": int(signal_row.get("trend_age", 0)),
+            "hma_slope": float(signal_row.get("hma5_slope", signal_row.get("hma_slope", 0.0))),
+            "ma_cross_signal": int(signal_row.get("ma_cross_signal", 0)),
+            "price_vs_ema8": float(signal_row.get("close_ma8_dist", 0.0)),
+            "price_vs_ema21": float(signal_row.get("close_ma21_dist", 0.0)),
+            "price_vs_ema55": float(signal_row.get("close_ma55_dist", 0.0)),
+            "adx": float(signal_row.get("adx", 20.0)),
+            "roc_10": float(signal_row.get("roc10", signal_row.get("roc_10", 0.0))),
+            # Risk data
+            "regime": str(signal_row.get("regime", "SIDEWAYS")).upper(),
+            "atr_ratio": float(signal_row.get("atr_ratio", 1.0)),
+            "volatility_20d": float(signal_row.get("volatility_20d", 25.0)),
+            "drawdown_pct": float(signal_row.get("drawdown_pct", 0.0)),
+            "rr_ratio": float(signal_row.get("rr_ratio", 1.0)),
+            "days_in_regime": int(signal_row.get("days_in_regime", 0)),
+        }
+
+    # ── Convert extended_row → extended_data dict for SmartMoneyAgent ──
+    ext_data = {}
+    if extended_row:
+        ext_data = {
+            "sm_score": float(extended_row.get("sm_score", 50.0)),
+            "ff_score": float(extended_row.get("ff_score", 50.0)),
+            "vpower": float(extended_row.get("vpower", signal_row.get("vpower", 1.0) if signal_row is not None else 1.0)),
+            "foreign_streak": int(extended_row.get("ff_streak", extended_row.get("foreign_streak", 0))),
+            "bid_offer_ratio": float(extended_row.get("bid_offer_ratio", 1.0)),
+            "sm_signal": str(extended_row.get("sm_signal", "Neutral")),
+            "ff_signal": str(extended_row.get("ff_signal", "Neutral")),
+            "relative_volume": float(extended_row.get("relative_volume", extended_row.get("rvol", 1.0))),
+            "avg_trade_size_z": float(extended_row.get("avg_trade_size_z", 0.0)),
+        }
+    elif signal_row is not None:
+        # Fallback: extract what we can from signal_row
+        ext_data = {
+            "sm_score": float(signal_row.get("sm_score", 50.0)),
+            "ff_score": float(signal_row.get("ff_score", 50.0)),
+            "vpower": float(signal_row.get("vpower", 1.0)),
+            "foreign_streak": int(signal_row.get("ff_streak", 0)),
+            "bid_offer_ratio": 1.0,
+            "sm_signal": str(signal_row.get("sm_signal", "Neutral")),
+            "relative_volume": 1.0,
+        }
+
+    # ── Macro data (from regime_enhanced or provided) ──
+    macro = macro_data or {}
+    if not macro and signal_row is not None:
+        macro = {
+            "market_score": float(signal_row.get("market_score", 50.0)),
+            "risk_level": str(signal_row.get("risk_level", "MEDIUM")),
+            "action_bias": str(signal_row.get("action_bias", "NORMAL")),
+            "sector": str(signal_row.get("sector", get_sector(ticker) if 'get_sector' in dir() else "unknown")),
+        }
+
+    # ── Sentiment ──
+    sent = sentiment_data or {}
+
+    # ── Inject ML score if available (overrides base TrendAgent input) ──
+    if ml_score is not None:
+        # ML score enriches signal_data as an additional confidence signal
+        signal_data["ml_score"] = ml_score
+        # Also feed into macro as market intelligence
+        macro.setdefault("ml_confidence", min(ml_score / 100.0, 1.0))
+
+    # ── Run AgentOrchestrator ──
+    orchestrator = AgentOrchestrator()
+    analysis = orchestrator.run_analysis(
+        ticker=ticker,
+        signal_data=signal_data,
+        extended_data=ext_data,
+        macro_data=macro,
+        sentiment_data=sent,
+    )
+
+    md = analysis.master_decision
+    result = {
+        "action": md.action,
+        "score": md.score,
+        "confidence": md.confidence,
+        "risk_level": md.risk_level,
+        "position_size": md.position_size_modifier,
+        "reasoning": md.reasoning,
+        "conflicts": md.conflicts,
+        "agent_scores": md.agent_scores,
+        "full_analysis": analysis,
+    }
+
+    # ── Phase 6 Integration: Portfolio Position Sizing ──
+    if portfolio is not None and md.action in ("STRONG_BUY", "BUY"):
+        try:
+            from pixellent_portfolio import PositionSizer
+
+            entry_price = float(signal_row.get("close", 0)) if signal_row is not None else 0
+            stop_loss = float(signal_row.get("hard_stop_final",
+                             entry_price * 0.93)) if signal_row is not None else 0
+
+            sizer = PositionSizer()
+            pos_rec = sizer.calculate_position_size(
+                ticker=ticker,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                ai_score=md.score,
+                confidence=md.confidence * 100,  # PositionSizer expects 0-100
+                portfolio=portfolio,
+            )
+
+            # Apply Phase 1G composite modifier
+            adjusted_lots = int(pos_rec.recommended_lots * md.position_size_modifier)
+            adjusted_lots = max(0, min(adjusted_lots, pos_rec.recommended_lots))
+
+            result["position_lots"] = adjusted_lots
+            result["position_capital"] = adjusted_lots * 100 * entry_price
+            result["position_reasoning"] = pos_rec.reasoning
+            result["position_constraints"] = pos_rec.constraints_applied
+            result["kelly_fraction"] = pos_rec.kelly_fraction
+
+        except ImportError:
+            logger.warning("pixellent_portfolio not available for position sizing")
+        except Exception as e:
+            logger.warning(f"Position sizing failed for {ticker}: {e}")
+
+    return result
+
+
+def run_agent_screening(
+    screen_results: pd.DataFrame,
+    macro_data: Optional[Dict[str, Any]] = None,
+    portfolio=None,
+    top_n: int = 20,
+) -> pd.DataFrame:
+    """
+    Run AgentOrchestrator on screening results (output of screen_all_enhanced).
+
+    Adds columns: Agent_Action, Agent_Score, Agent_Confidence, Agent_Risk,
+                  Agent_PositionSize, Agent_Conflicts
+
+    Args:
+        screen_results: DataFrame from screen_all_enhanced()
+        macro_data: Market-wide macro context
+        portfolio: Portfolio instance for position sizing
+        top_n: Only process top N stocks (performance optimization)
+
+    Returns:
+        Enhanced DataFrame with agent analysis columns
+    """
+    if screen_results.empty:
+        return screen_results
+
+    # Only process top_n by AI_Score to save time
+    df = screen_results.head(top_n).copy()
+
+    agent_results = []
+    for idx, row in df.iterrows():
+        ticker = row.get("Ticker", "")
+
+        # Build extended data from screening columns
+        ext = {
+            "sm_score": row.get("SM_Score", 50.0),
+            "ff_score": row.get("FF_Score", 50.0),
+            "vpower": row.get("VPower", 1.0),
+            "ff_streak": 0,
+            "sm_signal": row.get("SM_Signal", "Neutral"),
+            "ff_signal": row.get("FF_Signal", "Neutral"),
+        }
+
+        # Build signal-like data from screening columns
+        sig_data = {
+            "ema_status": row.get("EMA Stack", "NEUTRAL"),
+            "trend_age": row.get("TrendAge", 0),
+            "regime": row.get("Regime", "SIDEWAYS"),
+            "rr_ratio": row.get("R/R", 1.0),
+            "days_in_regime": 5,  # Default
+            "atr_ratio": 1.0,
+            "drawdown_pct": 0.0,
+            "volatility_20d": 25.0,
+        }
+
+        macro = macro_data or {
+            "market_score": row.get("Market_Score", 50.0),
+            "risk_level": row.get("Risk_Level", "MEDIUM"),
+            "action_bias": row.get("Action_Bias", "NORMAL"),
+            "sector": row.get("Sector", "unknown"),
+        }
+
+        try:
+            result = run_agent_analysis(
+                ticker=ticker,
+                signal_row=pd.Series(sig_data),
+                extended_row=ext,
+                macro_data=macro,
+                ml_score=row.get("AI_Score"),
+                portfolio=portfolio,
+            )
+
+            agent_results.append({
+                "Agent_Action": result["action"],
+                "Agent_Score": result["score"],
+                "Agent_Confidence": round(result["confidence"] * 100, 1),
+                "Agent_Risk": result["risk_level"],
+                "Agent_PosSize": round(result["position_size"], 2),
+                "Agent_Lots": result.get("position_lots", 0),
+                "Agent_Conflicts": len(result.get("conflicts", [])),
+            })
+        except Exception as e:
+            logger.warning(f"Agent analysis failed for {ticker}: {e}")
+            agent_results.append({
+                "Agent_Action": "ERROR",
+                "Agent_Score": 0,
+                "Agent_Confidence": 0,
+                "Agent_Risk": "UNKNOWN",
+                "Agent_PosSize": 0,
+                "Agent_Lots": 0,
+                "Agent_Conflicts": 0,
+            })
+
+    # Merge results
+    agent_df = pd.DataFrame(agent_results, index=df.index)
+    df = pd.concat([df, agent_df], axis=1)
+
+    # Re-sort by Agent_Score
+    df = df.sort_values("Agent_Score", ascending=False).reset_index(drop=True)
+
+    return df
+
+
+# ============================================================================
+# ML SCORING BRIDGE — Connect pixellent_scoring to orchestrator
+# ============================================================================
+
+def get_ml_score(
+    signal_df: pd.DataFrame,
+    extended_data: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    """
+    Get ML-based score from pixellent_scoring module.
+
+    Falls back to None if model not available (orchestrator will use
+    rule-based scoring instead).
+
+    Args:
+        signal_df: Signal DataFrame (last row used)
+        extended_data: Optional extended market data
+
+    Returns:
+        ML score (0-100) or None if unavailable
+    """
+    try:
+        from pixellent_scoring import PixellentScorer, score_stock, heuristic_score
+
+        # Try ML model first
+        scorer = PixellentScorer()
+        model_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "data", "model_v1.joblib"
+        )
+
+        if os.path.exists(model_path):
+            scorer.load_model(model_path)
+            result = scorer.predict(signal_df)
+            if result is not None and len(result) > 0:
+                return float(result.iloc[-1].get("ml_score", result.iloc[-1].get("score", 50.0)))
+
+        # Fallback to heuristic
+        score = heuristic_score(signal_df)
+        if score is not None and len(score) > 0:
+            return float(score.iloc[-1])
+
+    except ImportError:
+        logger.debug("pixellent_scoring not available — ML score disabled")
+    except Exception as e:
+        logger.debug(f"ML scoring failed: {e}")
+
+    return None
+
+
+# ============================================================================
 # TEST
 # ============================================================================
 
@@ -553,7 +880,7 @@ if __name__ == '__main__':
     print("Pixellent Integration Module — Info")
     print("=" * 60)
     print()
-    print("This module connects Phase 2 to the existing signal engine.")
+    print("This module connects ALL phases to a unified pipeline.")
     print()
     print("Key functions:")
     print("  compute_signals_enhanced(ticker, engine)")
@@ -562,15 +889,30 @@ if __name__ == '__main__':
     print("  screen_all_enhanced(engine)")
     print("    → Full screening with all Phase 2 columns")
     print()
-    print("  load_ihsg_with_fallback(engine)")
-    print("    → IHSG from DB → yfinance fallback → cache to DB")
+    print("  run_agent_analysis(ticker, signal_row, ...)")
+    print("    → Phase 5 AgentOrchestrator decision (BUY/SELL/HOLD + reasoning)")
+    print()
+    print("  run_agent_screening(screen_results, macro_data, portfolio)")
+    print("    → Batch agent analysis on screening output")
+    print()
+    print("  get_ml_score(signal_df)")
+    print("    → Phase 3 ML score from pixellent_scoring (XGBoost)")
     print()
     print("  classify_decision(ai_score, regime_risk)")
     print("    → Strong Buy / Watchlist / Wait / Avoid")
     print()
-    print("Usage:")
-    print("  engine = get_db_engine()")
-    print("  results = screen_all_enhanced(engine)")
-    print("  print(results[['Ticker','Sinyal','AI_Score','SM_Score','FF_Score']])")
+    print("Integration Map:")
+    print("  pixellent_signals.py ──┐")
+    print("  pixellent_smartmoney.py ├──→ compute_signals_enhanced()")
+    print("  pixellent_foreignflow.py┤         │")
+    print("  pixellent_regime_enhanced.py      │")
+    print("                                     ▼")
+    print("  pixellent_scoring.py ────→ get_ml_score()")
+    print("                                     │")
+    print("                                     ▼")
+    print("  pixellent_agents.py ─────→ run_agent_analysis()")
+    print("                                     │")
+    print("                                     ▼")
+    print("  pixellent_portfolio.py ──→ PositionSizer (Kelly + constraints)")
     print()
     print("✅ Integration module ready!")

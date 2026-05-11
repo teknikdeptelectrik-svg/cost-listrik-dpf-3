@@ -307,7 +307,10 @@ class ReasoningEngine:
             try:
                 return self._generate_llm(ticker, signal_data, scores, regime_info)
             except Exception as e:
-                logger.warning(f"LLM reasoning failed: {e}. Falling back to template.")
+                logger.error(
+                    f"LLM reasoning failed for {ticker}: {e}. "
+                    f"Falling back to template-based reasoning."
+                )
 
         # Template-based fallback (always works)
         return self._generate_template(ticker, signal_data, scores, regime_info)
@@ -352,6 +355,9 @@ class ReasoningEngine:
         regime_info: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Generate narrative using templates."""
+        # Fix #5: Map score keys from agent format to reasoning format
+        mapped_scores = self._map_scores(scores)
+
         sections = []
 
         # Header
@@ -359,15 +365,15 @@ class ReasoningEngine:
         sections.append(header)
 
         # 1. Trend Section
-        trend_text = self._build_trend_section(signal_data, scores)
+        trend_text = self._build_trend_section(signal_data, mapped_scores)
         sections.append(f"📈 TREND:\n{trend_text}\n")
 
         # 2. Smart Money Section
-        sm_text = self._build_smartmoney_section(signal_data, scores)
+        sm_text = self._build_smartmoney_section(signal_data, mapped_scores)
         sections.append(f"💰 SMART MONEY:\n{sm_text}\n")
 
         # 3. Risk Section
-        risk_text = self._build_risk_section(signal_data, scores, regime_info)
+        risk_text = self._build_risk_section(signal_data, mapped_scores, regime_info)
         sections.append(f"⚡ RISK:\n{risk_text}\n")
 
         # 4. Regime Change (if applicable)
@@ -376,10 +382,77 @@ class ReasoningEngine:
             sections.append(f"🔄 REGIME:\n{regime_text}\n")
 
         # 5. Decision Section
-        decision_text = self._build_decision_section(scores)
+        decision_text = self._build_decision_section(mapped_scores)
         sections.append(f"🎯 DECISION:\n{decision_text}\n")
 
+        # Fix #4: Add indicator that this is template-based (not LLM)
+        sections.append("─" * 40)
+        sections.append("(template-based reasoning)")
+
         return "\n".join(sections)
+
+    def _safe_format(self, key: str, params: Dict[str, Any]) -> str:
+        """
+        Safely format a template with params. Uses safe_substitute to avoid
+        showing raw placeholders like {trend_age} if a key is missing.
+
+        Returns formatted string, never raw template with unfilled placeholders.
+        """
+        from string import Template as StrTemplate
+
+        template_str = self.templates.get(key, "")
+        if not template_str:
+            return "(Data not available)"
+
+        # Convert .format() style {var} and {var:.2f} to $var for safe_substitute
+        # First try standard .format() — it handles format specs like {hma_slope:.4f}
+        try:
+            return template_str.format(**params)
+        except (KeyError, ValueError, IndexError):
+            pass
+
+        # Fallback: strip format specs and use safe_substitute
+        import re
+        # Convert {var:spec} → ${var}  and {var} → ${var}
+        safe_template = re.sub(r'\{(\w+)(?::[^}]*)?\}', r'${\1}', template_str)
+        try:
+            # safe_substitute leaves unmatched $vars as-is, but we replace with "N/A"
+            result = StrTemplate(safe_template).safe_substitute(
+                {k: str(v) for k, v in params.items()}
+            )
+            # Clean any remaining ${...} that weren't substituted
+            result = re.sub(r'\$\{[^}]+\}', 'N/A', result)
+            return result
+        except Exception:
+            return "(Data not available)"
+
+    def _map_scores(self, scores: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Map score keys from AgentOrchestrator output to reasoning engine keys.
+
+        AgentOrchestrator uses: TrendAgent→score, SmartMoneyAgent→score, etc.
+        Reasoning engine expects: trend_score, smartmoney_score, risk_score, etc.
+
+        This adapter handles both naming conventions.
+        """
+        mapped = dict(scores)  # Copy original
+
+        # Map from agent_scores dict if present (from pixellent_agents.py)
+        agent_scores = scores.get("agent_scores", {})
+        if agent_scores:
+            mapped.setdefault("trend_score", agent_scores.get("TrendAgent", 50))
+            mapped.setdefault("smartmoney_score", agent_scores.get("SmartMoneyAgent", 50))
+            mapped.setdefault("risk_score", agent_scores.get("RiskAgent", 50))
+            mapped.setdefault("macro_score", agent_scores.get("MacroAgent", 50))
+
+        # Also accept direct score/confidence from MasterDecision
+        mapped.setdefault("composite_score", scores.get("score", scores.get("composite_score", 50)))
+        mapped.setdefault("confidence", scores.get("confidence", 50))
+        mapped.setdefault("trend_score", scores.get("trend_score", 50))
+        mapped.setdefault("smartmoney_score", scores.get("smartmoney_score", 50))
+        mapped.setdefault("risk_score", scores.get("risk_score", 50))
+
+        return mapped
 
     def _build_trend_section(
         self, signal_data: Dict[str, Any], scores: Dict[str, Any]
@@ -400,10 +473,7 @@ class ReasoningEngine:
         else:
             key = "trend_neutral"
 
-        try:
-            return self.templates[key].format(**params)
-        except (KeyError, ValueError):
-            return self.templates[key]
+        return self._safe_format(key, params)
 
     def _build_smartmoney_section(
         self, signal_data: Dict[str, Any], scores: Dict[str, Any]
@@ -420,17 +490,19 @@ class ReasoningEngine:
             "foreign_net_value": foreign_net_value,
         }
 
+        # Fix #3: Distribution requires BOTH sm_score < 45 AND foreign sell streak
+        # Previously: sm_score <= 35 OR foreign_streak < -3 (too aggressive)
         if sm_score >= 65 and foreign_streak > 0:
             key = "smartmoney_accumulation"
-        elif sm_score <= 35 or foreign_streak < -3:
+        elif sm_score < 45 and foreign_streak <= -2:
+            key = "smartmoney_distribution"
+        elif foreign_streak <= -5 and sm_score < 55:
+            # Extended foreign sell streak with below-average SM → also distribution
             key = "smartmoney_distribution"
         else:
             key = "smartmoney_neutral"
 
-        try:
-            return self.templates[key].format(**params)
-        except (KeyError, ValueError):
-            return self.templates[key]
+        return self._safe_format(key, params)
 
     def _build_risk_section(
         self,
@@ -454,10 +526,7 @@ class ReasoningEngine:
         else:
             key = "risk_high"
 
-        try:
-            return self.templates[key].format(**params)
-        except (KeyError, ValueError):
-            return self.templates[key]
+        return self._safe_format(key, params)
 
     def _build_regime_change(self, regime_info: Dict[str, Any]) -> str:
         """Build regime change narrative."""
@@ -477,10 +546,7 @@ class ReasoningEngine:
             "transition_impact": impact,
         }
 
-        try:
-            return self.templates["regime_change"].format(**params)
-        except (KeyError, ValueError):
-            return f"Regime changed: {old} → {new}"
+        return self._safe_format("regime_change", params)
 
     def _build_decision_section(self, scores: Dict[str, Any]) -> str:
         """Build final decision explanation."""
@@ -500,10 +566,7 @@ class ReasoningEngine:
         else:
             key = "decision_strong_sell"
 
-        try:
-            return self.templates[key].format(**params)
-        except (KeyError, ValueError):
-            return self.templates[key]
+        return self._safe_format(key, params)
 
     # -------------------------------------------------------------------------
     # LLM-Based Reasoning
