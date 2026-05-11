@@ -35,9 +35,8 @@ import numpy as np
 import json
 import os
 import logging
-import tempfile
 from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -135,12 +134,9 @@ class BaseAgent:
         raise NotImplementedError(f"{self.name}.analyze() not implemented")
 
     def _safe_get(self, data: Dict, key: str, default: Any = 0.0) -> Any:
-        """Safely get a value from data dict with default. Validates numeric types."""
+        """Safely get a value from data dict with default."""
         val = data.get(key, default)
         if val is None:
-            return default
-        # Type guard: if default is numeric, ensure val is also numeric
-        if isinstance(default, (int, float)) and not isinstance(val, (int, float)):
             return default
         return val
 
@@ -262,28 +258,14 @@ class TrendAgent(BaseAgent):
 
         # --- ADX strength (weight: 10%) ---
         adx = self._safe_get(data, "adx", 20.0)
-        # ADX measures trend STRENGTH only, not direction.
-        # Combine with direction signals (ema_status + hma_slope) to produce
-        # a directional ADX score: strong trend in bullish direction = high,
-        # strong trend in bearish direction = low, no trend = neutral (50).
-        adx_strength = np.clip(adx / 50.0, 0.0, 1.0)  # 0..1, peaks at ADX=50
-
-        # Determine direction from ema_score and hma_score (already computed above)
-        # ema_score & hma_score are 0-100, where >50 = bullish, <50 = bearish
-        direction_bias = ((ema_score + hma_score) / 2.0 - 50.0) / 50.0  # -1..+1
-
-        # ADX score: 50 (neutral) + direction * strength * 50
-        # Strong ADX + bullish direction → high score (up to 100)
-        # Strong ADX + bearish direction → low score (down to 0)
-        # Weak ADX (no trend) → stays near 50 regardless of direction
-        adx_score = 50.0 + direction_bias * adx_strength * 50.0
-        adx_score = np.clip(adx_score, 0, 100)
+        # ADX > 25 = trending, > 40 = strong trend
+        adx_score = np.clip(adx * 2, 0, 100)
         factors["adx_score"] = round(adx_score, 1)
 
         if adx >= 40:
-            reasoning_parts.append(f"ADX={adx:.0f}, very strong trend ({('bullish' if direction_bias > 0 else 'bearish')})")
+            reasoning_parts.append(f"ADX={adx:.0f}, very strong trend")
         elif adx >= 25:
-            reasoning_parts.append(f"ADX={adx:.0f}, confirmed trend ({('bullish' if direction_bias > 0 else 'bearish')})")
+            reasoning_parts.append(f"ADX={adx:.0f}, confirmed trend")
         else:
             reasoning_parts.append(f"ADX={adx:.0f}, weak/no trend")
 
@@ -403,8 +385,7 @@ class SmartMoneyAgent(BaseAgent):
         # --- Volume Power (weight: 20%) ---
         vpower = self._safe_get(data, "vpower", 1.0)
         # vpower > 1 = more buying volume, < 1 = more selling volume
-        # Center at 1.0 (neutral), range 0.5–1.5 maps to 25–75
-        vpower_score = np.clip((vpower - 1.0) * 50 + 50, 0, 100)
+        vpower_score = np.clip((vpower - 0.5) * 100, 0, 100)
         factors["vpower_score"] = round(vpower_score, 1)
 
         if vpower >= 1.5:
@@ -414,8 +395,7 @@ class SmartMoneyAgent(BaseAgent):
 
         # --- Bid/Offer Ratio (weight: 15%) ---
         bo_ratio = self._safe_get(data, "bid_offer_ratio", 1.0)
-        # Center at 1.0 (neutral): bo_ratio=1.0→50, 1.5→75, 0.5→25
-        bo_score = np.clip((bo_ratio - 1.0) * 50 + 50, 0, 100)
+        bo_score = np.clip((bo_ratio - 0.5) * 100 / 1.5, 0, 100)
         factors["bid_offer_score"] = round(bo_score, 1)
 
         if bo_ratio >= 1.5:
@@ -544,8 +524,7 @@ class RiskAgent(BaseAgent):
         # --- ATR Ratio (weight: 20%) ---
         atr_ratio = self._safe_get(data, "atr_ratio", 1.0)
         # Low ATR = calm market = safer; high ATR = volatile = riskier
-        # Centered at atr_ratio=1.0 (average) = 50
-        atr_score = np.clip(100 - (atr_ratio - 1.0) * 50, 10, 95)
+        atr_score = np.clip(100 - (atr_ratio - 0.5) * 50, 10, 95)
         factors["atr_score"] = round(atr_score, 1)
 
         if atr_ratio >= 2.0:
@@ -558,17 +537,16 @@ class RiskAgent(BaseAgent):
         # --- Volatility (weight: 15%) ---
         vol_20d = self._safe_get(data, "volatility_20d", 25.0)
         # IDX typical range: 15-50% annualized
-        # Centered at 25% (typical IDX) = 50
-        vol_score = np.clip(100 - (vol_20d - 25) * 2, 5, 95)
+        # Low vol = safer
+        vol_score = np.clip(100 - (vol_20d - 10) * 2, 5, 95)
         factors["volatility_score"] = round(vol_score, 1)
 
         # --- Drawdown (weight: 15%) ---
         drawdown = self._safe_get(data, "drawdown_pct", 0.0)
         # Drawdown is negative %; closer to 0 = safer
         # -5% is fine, -15% is bad, -30% is terrible
-        # drawdown=0 (no drawdown / unknown) → 65 (mildly safe, not max)
         dd_abs = abs(drawdown)
-        dd_score = np.clip(65 - dd_abs * 3, 5, 95)
+        dd_score = np.clip(100 - dd_abs * 5, 5, 95)
         factors["drawdown_score"] = round(dd_score, 1)
 
         if dd_abs >= 15:
@@ -578,8 +556,8 @@ class RiskAgent(BaseAgent):
 
         # --- Risk/Reward Ratio (weight: 15%) ---
         rr_ratio = self._safe_get(data, "rr_ratio", 1.0)
-        # R/R = 1 is neutral (50), > 2 is good (75), > 3 is excellent (100)
-        rr_score = np.clip(50 + (rr_ratio - 1) * 25, 10, 95)
+        # R/R > 2 is good, > 3 is excellent
+        rr_score = np.clip(rr_ratio * 25, 10, 95)
         factors["rr_score"] = round(rr_score, 1)
 
         if rr_ratio >= 3.0:
@@ -662,7 +640,7 @@ class MacroAgent(BaseAgent):
     """
     Evaluates macroeconomic favorability for a stock/sector.
 
-    Inputs: macro_score, sector_bias, sentiment_score, bi_rate, inflation, fx
+    Inputs: macro_score, sector_bias, sentiment_score, global_correlation
     Output: Macro favorability (0-100), sector_recommendation
     Logic: Combines macro + sentiment + sector sensitivity
     """
@@ -732,6 +710,7 @@ class MacroAgent(BaseAgent):
             reasoning_parts.append(f"Sentiment negative ({sentiment_score:.0f}/100)")
 
         # --- Global Correlation & Risk (weight: 20%) ---
+        global_corr = self._safe_get(data, "global_correlation", 0.5)
         bi_direction = self._safe_get(data, "bi_rate_direction", "hold")
         inflation_level = self._safe_get(data, "inflation_level", "moderate")
         fx_stability = self._safe_get(data, "fx_stability", "stable")
@@ -747,11 +726,11 @@ class MacroAgent(BaseAgent):
             reasoning_parts.append("BI Rate direction: hiking (headwind)")
 
         # Inflation
-        inflation_adj = {"low": 10, "moderate": 0, "high": -10, "very_high": -20}
+        inflation_adj = {"low": 10, "moderate": 5, "high": -10, "very_high": -20}
         global_score += inflation_adj.get(inflation_level, 0)
 
         # FX stability
-        fx_adj = {"stable": 0, "mild_weakness": -5, "sharp_depreciation": -20}
+        fx_adj = {"stable": 5, "mild_weakness": -5, "sharp_depreciation": -20}
         global_score += fx_adj.get(fx_stability, 0)
 
         global_score = np.clip(global_score, 0, 100)
@@ -846,13 +825,15 @@ class MasterDecisionAgent:
             )
 
         # --- Determine weights ---
-        # Use provided agent_weights (from orchestrator's configured weights).
-        # If not provided, fall back to equal weights.
-        # NOTE: We do NOT use confidence as weight — confidence modulates the
-        # final action threshold, not the aggregation weights.
         if agent_weights is None:
-            n = len(agent_outputs)
-            agent_weights = {k: 1.0 / n for k in agent_outputs}
+            agent_weights = {name: out.confidence for name, out in agent_outputs.items()}
+            # Normalize
+            total_w = sum(agent_weights.values())
+            if total_w > 0:
+                agent_weights = {k: v / total_w for k, v in agent_weights.items()}
+            else:
+                n = len(agent_outputs)
+                agent_weights = {k: 1.0 / n for k in agent_outputs}
 
         # --- Compute weighted score ---
         weighted_score = 0.0
@@ -889,22 +870,20 @@ class MasterDecisionAgent:
         if risk_output and trend_output:
             risk_label = risk_output.factors.get("risk_label", "MEDIUM")
             if risk_label == "EXTREME":
+                # Risk override: cap bullish signals in extreme risk
+                composite_score = min(composite_score, 50)
                 if trend_output.score > 60:
                     conflicts.append("RISK_OVERRIDE: Extreme risk caps bullish trend signal")
-                composite_score = min(composite_score, 50)
 
-        # SmartMoney divergence is already detected in _detect_conflicts()
-        # as TREND_SM_GAP. Apply symmetric score adjustment:
-        # - SM distributing (score<40) while trend bullish → reduce composite
-        # - SM accumulating (score>70) while trend weak → boost composite
-        if any("TREND_SM_GAP" in c for c in conflicts):
-            sm_output = agent_outputs.get("SmartMoneyAgent")
-            if sm_output:
-                if sm_output.score < 40 and trend_output and trend_output.score > 60:
-                    penalty = min(8, (trend_output.score - sm_output.score - 30) * 0.3 + 4)
-                    composite_score -= penalty
-                elif sm_output.score > 70 and trend_output and trend_output.score < 40:
-                    composite_score += 5  # SM accumulating = early signal, slight boost
+        # If SmartMoney shows strong distribution but Trend is bullish (divergence)
+        sm_output = agent_outputs.get("SmartMoneyAgent")
+        if sm_output and trend_output:
+            if sm_output.score < 30 and trend_output.score > 65:
+                # Smart money divergence — reduce score
+                composite_score -= 8
+                conflicts.append(
+                    "SM_DIVERGENCE: Smart money distributing despite bullish trend"
+                )
 
         composite_score = np.clip(composite_score, 0, 100)
 
@@ -1022,780 +1001,12 @@ class MasterDecisionAgent:
 
 
 # =============================================================================
-# 8A. PHASE 1A — DYNAMIC REGIME WEIGHTING
-# =============================================================================
-
-# Weight profiles per regime state. Each profile sums to 1.0.
-# Logic:
-#   TRENDING  → Trust TrendAgent more, Risk less (trend is confirmed)
-#   SIDEWAYS  → Trust SmartMoney more (accumulation/distribution matters)
-#   HIGH_VOL  → Trust RiskAgent more (risk management is priority)
-REGIME_WEIGHT_PROFILES: Dict[str, Dict[str, float]] = {
-    "TRENDING": {
-        "TrendAgent": 0.40,
-        "SmartMoneyAgent": 0.25,
-        "RiskAgent": 0.15,
-        "MacroAgent": 0.20,
-    },
-    "SIDEWAYS": {
-        "TrendAgent": 0.20,
-        "SmartMoneyAgent": 0.35,
-        "RiskAgent": 0.25,
-        "MacroAgent": 0.20,
-    },
-    "HIGH_VOL": {
-        "TrendAgent": 0.15,
-        "SmartMoneyAgent": 0.20,
-        "RiskAgent": 0.45,
-        "MacroAgent": 0.20,
-    },
-    # Fallback for unknown/missing regime
-    "DEFAULT": {
-        "TrendAgent": 0.30,
-        "SmartMoneyAgent": 0.25,
-        "RiskAgent": 0.25,
-        "MacroAgent": 0.20,
-    },
-}
-
-
-def get_regime_weights(regime: str) -> Dict[str, float]:
-    """
-    Return per-agent weight profile based on current market regime.
-
-    Args:
-        regime: Market regime string (TRENDING/SIDEWAYS/HIGH_VOL)
-
-    Returns:
-        Dict of agent_name -> weight (sums to 1.0)
-    """
-    regime_upper = (regime or "DEFAULT").upper().strip()
-    return REGIME_WEIGHT_PROFILES.get(regime_upper, REGIME_WEIGHT_PROFILES["DEFAULT"]).copy()
-
-
-# =============================================================================
-# 8B. PHASE 1B — HIERARCHICAL CRASH OVERRIDE (Kill-Switch)
-# =============================================================================
-
-@dataclass
-class CrashOverrideResult:
-    """Result of the crash override check."""
-    triggered: bool = False
-    forced_action: str = "HOLD"
-    forced_score: float = 50.0
-    override_reasons: List[str] = field(default_factory=list)
-    severity: str = "NONE"  # NONE / WARNING / CRITICAL / EXTREME
-
-
-# Crash override thresholds (configurable)
-CRASH_OVERRIDE_CONFIG = {
-    # EXTREME: Immediate force STRONG_SELL
-    "extreme_drawdown_pct": -20.0,       # Drawdown worse than -20%
-    "extreme_market_score": 20.0,        # Market score below 20
-    "extreme_atr_ratio": 2.5,            # ATR ratio above 2.5x normal
-    # CRITICAL: Force SELL, cap score at 30
-    "critical_drawdown_pct": -12.0,
-    "critical_market_score": 30.0,
-    "critical_ff_outflow_threshold": 25,  # FF score below 25
-    # WARNING: Cap score at 45 (can't BUY)
-    "warning_drawdown_pct": -8.0,
-    "warning_high_vol_days": 3,          # Days in HIGH_VOL regime
-}
-
-
-def check_crash_override(
-    signal_data: Optional[Dict[str, Any]] = None,
-    extended_data: Optional[Dict[str, Any]] = None,
-    macro_data: Optional[Dict[str, Any]] = None,
-    config: Optional[Dict[str, Any]] = None,
-) -> CrashOverrideResult:
-    """
-    Hierarchical crash override — checks for dangerous market conditions
-    BEFORE agent scoring. If triggered, overrides the final decision.
-
-    Hierarchy (checked top-down, first match wins):
-      1. EXTREME → Force STRONG_SELL (score=5)
-      2. CRITICAL → Force SELL (score=25)
-      3. WARNING → Cap at HOLD (max score=45)
-
-    Args:
-        signal_data: Technical/trend data with regime, drawdown, atr_ratio
-        extended_data: Smart money data with ff_score, foreign_streak
-        macro_data: Macro context with market_score, action_bias
-
-    Returns:
-        CrashOverrideResult with triggered status and forced action
-    """
-    cfg = {**CRASH_OVERRIDE_CONFIG, **(config or {})}
-    result = CrashOverrideResult()
-
-    sig = signal_data or {}
-    ext = extended_data or {}
-    mac = macro_data or {}
-
-    regime = str(sig.get("regime", "SIDEWAYS")).upper()
-    drawdown = float(sig.get("drawdown_pct", 0.0))
-    atr_ratio = float(sig.get("atr_ratio", 1.0))
-    market_score = float(mac.get("market_score", 50.0))
-    ff_score = float(ext.get("ff_score", 50.0))
-    foreign_streak = int(ext.get("foreign_streak", 0))
-    days_in_regime = int(sig.get("days_in_regime", 0))
-    action_bias = str(mac.get("action_bias", "NORMAL")).upper()
-
-    reasons = []
-
-    # ═══ LEVEL 1: EXTREME — Force STRONG_SELL ═══
-    extreme_triggers = 0
-
-    if drawdown <= cfg["extreme_drawdown_pct"]:
-        extreme_triggers += 1
-        reasons.append(f"EXTREME: Drawdown={drawdown:.1f}% (threshold={cfg['extreme_drawdown_pct']}%)")
-
-    if market_score <= cfg["extreme_market_score"]:
-        extreme_triggers += 1
-        reasons.append(f"EXTREME: Market score={market_score:.0f} (threshold={cfg['extreme_market_score']})")
-
-    if atr_ratio >= cfg["extreme_atr_ratio"]:
-        extreme_triggers += 1
-        reasons.append(f"EXTREME: ATR ratio={atr_ratio:.2f} (threshold={cfg['extreme_atr_ratio']})")
-
-    # EXTREME requires: regime=HIGH_VOL + at least 1 extreme trigger
-    # OR: 2+ extreme triggers regardless of regime
-    if (regime == "HIGH_VOL" and extreme_triggers >= 1) or extreme_triggers >= 2:
-        result.triggered = True
-        result.forced_action = "STRONG_SELL"
-        result.forced_score = 5.0
-        result.severity = "EXTREME"
-        result.override_reasons = reasons
-        return result
-
-    # ═══ LEVEL 2: CRITICAL — Force SELL ═══
-    critical_triggers = 0
-
-    if drawdown <= cfg["critical_drawdown_pct"]:
-        critical_triggers += 1
-        reasons.append(f"CRITICAL: Drawdown={drawdown:.1f}% (threshold={cfg['critical_drawdown_pct']}%)")
-
-    if market_score <= cfg["critical_market_score"]:
-        critical_triggers += 1
-        reasons.append(f"CRITICAL: Market score={market_score:.0f} (threshold={cfg['critical_market_score']})")
-
-    if ff_score <= cfg["critical_ff_outflow_threshold"]:
-        critical_triggers += 1
-        reasons.append(f"CRITICAL: FF score={ff_score:.0f} (threshold={cfg['critical_ff_outflow_threshold']})")
-
-    if foreign_streak <= -8:
-        critical_triggers += 1
-        reasons.append(f"CRITICAL: Foreign sell streak={abs(foreign_streak)} days")
-
-    # CRITICAL requires: 2+ critical triggers, or regime=HIGH_VOL + 1 critical
-    if critical_triggers >= 2 or (regime == "HIGH_VOL" and critical_triggers >= 1):
-        result.triggered = True
-        result.forced_action = "SELL"
-        result.forced_score = 25.0
-        result.severity = "CRITICAL"
-        result.override_reasons = reasons
-        return result
-
-    # ═══ LEVEL 3: WARNING — Cap score at 45 (no BUY allowed) ═══
-    warning_triggers = 0
-
-    if drawdown <= cfg["warning_drawdown_pct"]:
-        warning_triggers += 1
-        reasons.append(f"WARNING: Drawdown={drawdown:.1f}% (threshold={cfg['warning_drawdown_pct']}%)")
-
-    if regime == "HIGH_VOL" and days_in_regime >= cfg["warning_high_vol_days"]:
-        warning_triggers += 1
-        reasons.append(f"WARNING: HIGH_VOL regime for {days_in_regime} days")
-
-    if action_bias == "CASH":
-        warning_triggers += 1
-        reasons.append("WARNING: Market action_bias=CASH")
-
-    if warning_triggers >= 2:
-        result.triggered = True
-        result.forced_action = "HOLD"  # Will cap score, not force action
-        result.forced_score = 45.0  # Maximum allowed score
-        result.severity = "WARNING"
-        result.override_reasons = reasons
-        return result
-
-    # No override triggered
-    result.override_reasons = reasons  # Still pass reasons for logging
-    return result
-
-
-# =============================================================================
-# 8C. PHASE 1E — AGENT RELIABILITY TRACKING (Rolling Winrate)
-# =============================================================================
-
-class AgentReliabilityTracker:
-    """
-    Tracks rolling winrate per agent over the last N decisions.
-    Used to modulate agent confidence in the orchestrator.
-
-    A "win" is defined as:
-      - Agent score > 55 (bullish) AND 5-day return > 0
-      - Agent score < 45 (bearish) AND 5-day return < 0
-      - Agent score 45-55 (neutral) AND abs(5-day return) < 2% → half win
-
-    Winrate is stored as rolling window, not cumulative.
-    """
-
-    def __init__(self, window_size: int = 30, min_decisions: int = 5):
-        """
-        Args:
-            window_size: Rolling window for winrate calculation
-            min_decisions: Minimum decisions before winrate is considered valid
-        """
-        self.window_size = window_size
-        self.min_decisions = min_decisions
-        # Per-agent rolling outcomes: deque of (agent_score, actual_return_5d)
-        self._history: Dict[str, List[Dict[str, float]]] = {
-            "TrendAgent": [],
-            "SmartMoneyAgent": [],
-            "RiskAgent": [],
-            "MacroAgent": [],
-        }
-        # Cache of computed winrates
-        self._winrates: Dict[str, float] = {}
-
-    def record_outcome(
-        self,
-        agent_scores: Dict[str, float],
-        actual_return_5d: float,
-    ) -> None:
-        """
-        Record outcome for all agents from a single decision.
-
-        Args:
-            agent_scores: Dict of agent_name -> score at decision time
-            actual_return_5d: Actual 5-day forward return (%)
-        """
-        for agent_name, score in agent_scores.items():
-            if agent_name not in self._history:
-                self._history[agent_name] = []
-
-            self._history[agent_name].append({
-                "score": score,
-                "return_5d": actual_return_5d,
-                "timestamp": datetime.now().isoformat(),
-            })
-
-            # Keep only last window_size entries
-            if len(self._history[agent_name]) > self.window_size:
-                self._history[agent_name] = self._history[agent_name][-self.window_size:]
-
-        # Invalidate cache
-        self._winrates = {}
-
-    def get_winrate(self, agent_name: str) -> float:
-        """
-        Compute rolling winrate for a specific agent.
-
-        Returns:
-            Winrate as float 0.0-1.0.
-            Returns 0.5 (neutral) if insufficient data.
-        """
-        if agent_name in self._winrates:
-            return self._winrates[agent_name]
-
-        history = self._history.get(agent_name, [])
-        if len(history) < self.min_decisions:
-            return 0.5  # Neutral — not enough data
-
-        wins = 0.0
-        total = len(history)
-
-        for record in history:
-            score = record["score"]
-            ret = record["return_5d"]
-
-            if score > 55 and ret > 0:
-                wins += 1.0  # Bullish call, stock went up
-            elif score < 45 and ret < 0:
-                wins += 1.0  # Bearish call, stock went down
-            elif 45 <= score <= 55 and abs(ret) < 2.0:
-                wins += 0.5  # Neutral call, stock stayed flat
-            elif 45 <= score <= 55:
-                wins += 0.25  # Neutral call but stock moved — partial
-
-        winrate = wins / total
-        self._winrates[agent_name] = round(winrate, 4)
-        return self._winrates[agent_name]
-
-    def get_all_winrates(self) -> Dict[str, float]:
-        """Get winrates for all tracked agents."""
-        return {name: self.get_winrate(name) for name in self._history}
-
-    def get_confidence_modifier(self, agent_name: str) -> float:
-        """
-        Convert winrate to a confidence modifier (0.5 - 1.5).
-
-        - Winrate 0.5 (neutral/no data) → modifier 1.0 (no change)
-        - Winrate 0.7 (good) → modifier 1.2 (boost confidence)
-        - Winrate 0.3 (bad) → modifier 0.7 (reduce confidence)
-        - Winrate 0.9 (excellent) → modifier 1.4
-        - Winrate 0.1 (terrible) → modifier 0.5
-
-        Formula: modifier = 0.5 + winrate (clamped 0.5 to 1.5)
-        """
-        winrate = self.get_winrate(agent_name)
-        # Linear mapping: winrate 0→0.5, 0.5→1.0, 1.0→1.5
-        modifier = 0.5 + winrate
-        return round(np.clip(modifier, 0.5, 1.5), 3)
-
-    def get_all_confidence_modifiers(self) -> Dict[str, float]:
-        """Get confidence modifiers for all agents."""
-        return {name: self.get_confidence_modifier(name) for name in self._history}
-
-    def get_stats(self) -> Dict[str, Any]:
-        """Get tracker statistics."""
-        return {
-            "window_size": self.window_size,
-            "min_decisions": self.min_decisions,
-            "history_counts": {k: len(v) for k, v in self._history.items()},
-            "winrates": self.get_all_winrates(),
-            "confidence_modifiers": self.get_all_confidence_modifiers(),
-        }
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize for persistence."""
-        return {
-            "window_size": self.window_size,
-            "min_decisions": self.min_decisions,
-            "history": self._history,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'AgentReliabilityTracker':
-        """Deserialize from stored data."""
-        tracker = cls(
-            window_size=data.get("window_size", 30),
-            min_decisions=data.get("min_decisions", 5),
-        )
-        tracker._history = data.get("history", {})
-        # Ensure all agents are tracked
-        for name in ["TrendAgent", "SmartMoneyAgent", "RiskAgent", "MacroAgent"]:
-            if name not in tracker._history:
-                tracker._history[name] = []
-        return tracker
-
-
-# =============================================================================
-# 8D. PHASE 1C — CONFIDENCE-WEIGHTED SCORING
-# =============================================================================
-
-def apply_confidence_weighting(
-    weights: Dict[str, float],
-    agent_outputs: Dict[str, 'AgentOutput'],
-    blend_factor: float = 0.3,
-) -> Dict[str, float]:
-    """
-    Blend regime-based weights with agent confidence to produce final weights.
-
-    An agent with LOW confidence gets its weight reduced; an agent with
-    HIGH confidence gets boosted. This prevents a low-confidence agent
-    from dominating the composite score just because the regime gives it
-    a high base weight.
-
-    Formula per agent:
-        effective_weight = base_weight * (1 - blend) + base_weight * confidence * blend
-        → simplified: base_weight * ((1 - blend) + confidence * blend)
-
-    Then normalize so weights sum to 1.0.
-
-    Args:
-        weights: Base regime weights (agent_name → float, sum ~1.0)
-        agent_outputs: Dict of agent_name → AgentOutput (with .confidence)
-        blend_factor: How much confidence influences weights (0=none, 1=full)
-                      Default 0.3 = 30% influence from confidence
-
-    Returns:
-        Adjusted weights dict (sums to 1.0)
-    """
-    adjusted = {}
-    for name, base_w in weights.items():
-        output = agent_outputs.get(name)
-        if output is None:
-            adjusted[name] = base_w
-            continue
-        conf = output.confidence  # 0.0 - 1.0
-        # Scale factor: at blend=0.3, confidence=1.0 → 1.0, confidence=0.5 → 0.85
-        scale = (1.0 - blend_factor) + conf * blend_factor
-        adjusted[name] = base_w * scale
-
-    # Normalize
-    total = sum(adjusted.values())
-    if total > 0:
-        adjusted = {k: v / total for k, v in adjusted.items()}
-    return adjusted
-
-
-# =============================================================================
-# 8E. PHASE 1D — CONFLICT RESOLUTION ENHANCEMENT
-# =============================================================================
-
-@dataclass
-class ConflictResolution:
-    """Result of enhanced conflict resolution."""
-    score_adjustment: float = 0.0       # Add to composite score
-    confidence_penalty: float = 0.0     # Subtract from composite confidence
-    action_override: Optional[str] = None  # Force specific action (or None)
-    resolved_conflicts: List[str] = field(default_factory=list)
-    resolution_notes: List[str] = field(default_factory=list)
-
-
-def resolve_conflicts_enhanced(
-    agent_outputs: Dict[str, 'AgentOutput'],
-    composite_score: float,
-    composite_confidence: float,
-    regime: str = "SIDEWAYS",
-) -> ConflictResolution:
-    """
-    Enhanced conflict resolution — not just detect, but auto-resolve.
-
-    Resolution rules:
-      1. TREND vs RISK divergence (>30 pts):
-         - If Risk says EXTREME but Trend is bullish → degrade to HOLD
-         - If Risk says LOW but Trend is bearish → don't override (risk is fine)
-
-      2. TREND vs SMART_MONEY divergence (>25 pts):
-         - In TRENDING regime: trust Trend more (SM may be lagging)
-         - In SIDEWAYS regime: trust SM more (price choppy, flow matters)
-         - In HIGH_VOL: both unreliable, penalize confidence
-
-      3. MACRO vs ALL disagreement:
-         - If Macro is strongly bearish (<30) but others bullish:
-           Apply -5 score penalty + confidence penalty (macro headwind)
-         - If Macro is strongly bullish (>70) but others bearish:
-           Ignore (macro is slow, don't fight trend)
-
-      4. UNANIMITY BONUS:
-         - If all 4 agents agree direction (all >60 or all <40):
-           Boost confidence by +0.1 (high conviction)
-
-    Args:
-        agent_outputs: Dict of agent_name → AgentOutput
-        composite_score: Current weighted composite score
-        composite_confidence: Current weighted confidence
-        regime: Current market regime
-
-    Returns:
-        ConflictResolution with adjustments to apply
-    """
-    resolution = ConflictResolution()
-    scores = {name: out.score for name, out in agent_outputs.items()}
-
-    trend_s = scores.get("TrendAgent", 50)
-    sm_s = scores.get("SmartMoneyAgent", 50)
-    risk_s = scores.get("RiskAgent", 50)
-    macro_s = scores.get("MacroAgent", 50)
-
-    risk_output = agent_outputs.get("RiskAgent")
-    risk_label = "MEDIUM"
-    if risk_output:
-        risk_label = risk_output.factors.get("risk_label", "MEDIUM")
-
-    # ── Rule 1: Trend vs Risk ──
-    if abs(trend_s - risk_s) > 30:
-        if risk_label == "EXTREME" and trend_s > 60:
-            # Trend bullish but extreme risk → force HOLD, penalize
-            resolution.score_adjustment -= 10
-            resolution.confidence_penalty += 0.15
-            resolution.resolved_conflicts.append(
-                f"TREND_RISK_DIVERGE: Trend={trend_s:.0f} vs Risk={risk_s:.0f} "
-                f"(risk=EXTREME) → score -10, conf -0.15"
-            )
-        elif risk_label in ("HIGH", "EXTREME") and trend_s > 55:
-            # Less severe but still divergent
-            resolution.score_adjustment -= 5
-            resolution.confidence_penalty += 0.08
-            resolution.resolved_conflicts.append(
-                f"TREND_RISK_DIVERGE: Trend={trend_s:.0f} vs Risk={risk_s:.0f} "
-                f"(risk={risk_label}) → score -5, conf -0.08"
-            )
-
-    # ── Rule 2: Trend vs SmartMoney ──
-    if abs(trend_s - sm_s) > 25:
-        if regime == "TRENDING" and trend_s > sm_s:
-            # In trending market, SM may lag → mild penalty only
-            resolution.confidence_penalty += 0.05
-            resolution.resolution_notes.append(
-                f"TREND_SM_DIVERGE: Trend={trend_s:.0f}>SM={sm_s:.0f} in TRENDING "
-                f"(SM may lag, mild penalty)"
-            )
-        elif regime == "SIDEWAYS" and sm_s > trend_s:
-            # In sideways, SM is more reliable → boost toward SM direction
-            resolution.score_adjustment += 3
-            resolution.resolution_notes.append(
-                f"TREND_SM_DIVERGE: SM={sm_s:.0f}>Trend={trend_s:.0f} in SIDEWAYS "
-                f"(trust SM, +3 score)"
-            )
-        elif regime == "HIGH_VOL":
-            # Both unreliable in high vol
-            resolution.confidence_penalty += 0.12
-            resolution.resolved_conflicts.append(
-                f"TREND_SM_DIVERGE: Both unreliable in HIGH_VOL → conf -0.12"
-            )
-        else:
-            # Generic divergence
-            resolution.confidence_penalty += 0.08
-            resolution.resolved_conflicts.append(
-                f"TREND_SM_DIVERGE: Trend={trend_s:.0f} vs SM={sm_s:.0f} → conf -0.08"
-            )
-
-    # ── Rule 3: Macro vs All ──
-    non_macro_avg = 50.0
-    non_macro_scores = [s for n, s in scores.items() if n != "MacroAgent"]
-    if non_macro_scores:
-        non_macro_avg = sum(non_macro_scores) / len(non_macro_scores)
-
-    if macro_s < 30 and non_macro_avg > 60:
-        # Macro headwind but others bullish → penalize
-        resolution.score_adjustment -= 5
-        resolution.confidence_penalty += 0.05
-        resolution.resolved_conflicts.append(
-            f"MACRO_HEADWIND: Macro={macro_s:.0f} vs others_avg={non_macro_avg:.0f} "
-            f"→ score -5, conf -0.05"
-        )
-
-    # ── Rule 4: Unanimity Bonus ──
-    all_bullish = all(s > 60 for s in scores.values()) if scores else False
-    all_bearish = all(s < 40 for s in scores.values()) if scores else False
-
-    if all_bullish or all_bearish:
-        resolution.confidence_penalty -= 0.10  # Negative penalty = bonus
-        direction = "bullish" if all_bullish else "bearish"
-        resolution.resolution_notes.append(
-            f"UNANIMITY_BONUS: All agents {direction} → conf +0.10"
-        )
-
-    return resolution
-
-
-# =============================================================================
-# 8F. PHASE 1F — REGIME TRANSITION BONUS/PENALTY
-# =============================================================================
-
-def compute_regime_transition_adjustment(
-    regime: str,
-    days_in_regime: int,
-    previous_regime: Optional[str] = None,
-) -> Dict[str, float]:
-    """
-    Adjust confidence and score based on regime maturity/transition.
-
-    Logic:
-      - Early regime (days 1-3): Reduce confidence (regime not confirmed)
-      - Maturing regime (days 4-10): Normal (neutral adjustment)
-      - Mature regime (days 11+): Boost confidence (regime well-established)
-      - Fresh transition: Extra penalty if transitioning FROM a strong regime
-
-    Args:
-        regime: Current regime (TRENDING/SIDEWAYS/HIGH_VOL)
-        days_in_regime: How many days in current regime
-        previous_regime: Previous regime (optional, for transition detection)
-
-    Returns:
-        Dict with:
-          - confidence_modifier: multiply confidence by this (0.7 - 1.2)
-          - score_adjustment: add to score (-5 to +5)
-          - regime_maturity: str label (EARLY/NORMAL/MATURE)
-          - note: explanation string
-    """
-    result = {
-        "confidence_modifier": 1.0,
-        "score_adjustment": 0.0,
-        "regime_maturity": "NORMAL",
-        "note": "",
-    }
-
-    # Early regime: not yet confirmed
-    if days_in_regime <= 3:
-        result["confidence_modifier"] = 0.75
-        result["score_adjustment"] = -3.0
-        result["regime_maturity"] = "EARLY"
-        result["note"] = (
-            f"Regime {regime} only {days_in_regime} days old — not confirmed. "
-            f"Confidence reduced, score -3."
-        )
-
-        # Extra penalty if just transitioned FROM a strong regime
-        if previous_regime and previous_regime != regime:
-            if previous_regime == "TRENDING" and regime in ("SIDEWAYS", "HIGH_VOL"):
-                result["confidence_modifier"] = 0.65
-                result["score_adjustment"] = -5.0
-                result["note"] += " Transition from TRENDING adds extra caution."
-
-    # Normal maturity
-    elif days_in_regime <= 10:
-        result["confidence_modifier"] = 1.0
-        result["score_adjustment"] = 0.0
-        result["regime_maturity"] = "NORMAL"
-        result["note"] = f"Regime {regime} at {days_in_regime} days — normal maturity."
-
-    # Mature regime: well-established, high reliability
-    else:
-        result["confidence_modifier"] = 1.15
-        result["score_adjustment"] = 2.0
-        result["regime_maturity"] = "MATURE"
-        result["note"] = (
-            f"Regime {regime} at {days_in_regime} days — mature and stable. "
-            f"Confidence boosted, score +2."
-        )
-
-        # Extra boost for long TRENDING regimes (momentum)
-        if regime == "TRENDING" and days_in_regime > 20:
-            result["confidence_modifier"] = 1.20
-            result["score_adjustment"] = 3.0
-            result["note"] += f" Extended TRENDING ({days_in_regime}d) momentum bonus."
-
-    return result
-
-
-# =============================================================================
-# 8G. PHASE 1G — POSITION SIZING INTEGRATION (Composite)
-# =============================================================================
-
-def compute_composite_position_size(
-    risk_agent_modifier: float,
-    regime: str,
-    crash_severity: str = "NONE",
-    regime_maturity: str = "NORMAL",
-    composite_confidence: float = 0.5,
-    composite_score: float = 50.0,
-) -> Dict[str, Any]:
-    """
-    Compute final position size from all factors (not just RiskAgent).
-
-    Combines:
-      1. RiskAgent position_size_modifier (base)
-      2. Regime factor (TRENDING=1.2x, SIDEWAYS=0.8x, HIGH_VOL=0.5x)
-      3. Crash severity factor (WARNING=0.5x, CRITICAL=0.1x, EXTREME=0x)
-      4. Regime maturity factor (EARLY=0.7x, NORMAL=1.0x, MATURE=1.1x)
-      5. Confidence factor (low conf=reduce, high conf=allow full)
-      6. Score extremity bonus (very high/low score = more conviction)
-
-    Final position_size = base * regime * crash * maturity * confidence * extremity
-    Clamped to [0.0, 2.0] (0 = no position, 2.0 = 2x normal)
-
-    Args:
-        risk_agent_modifier: From RiskAgent.factors['position_size_modifier']
-        regime: Current market regime
-        crash_severity: From crash override (NONE/WARNING/CRITICAL/EXTREME)
-        regime_maturity: From regime transition (EARLY/NORMAL/MATURE)
-        composite_confidence: Final weighted confidence 0-1
-        composite_score: Final composite score 0-100
-
-    Returns:
-        Dict with:
-          - position_size: float (0.0 - 2.0, multiplier)
-          - position_pct: float (0 - 100%, suggested allocation %)
-          - factors: breakdown of each component
-          - recommendation: str label (FULL/NORMAL/REDUCED/MINIMAL/ZERO)
-    """
-    # 1. Base from RiskAgent
-    base = float(risk_agent_modifier)
-
-    # 2. Regime factor
-    regime_factors = {
-        "TRENDING": 1.2,
-        "SIDEWAYS": 0.8,
-        "HIGH_VOL": 0.5,
-    }
-    regime_f = regime_factors.get(regime.upper(), 0.9)
-
-    # 3. Crash severity factor
-    crash_factors = {
-        "NONE": 1.0,
-        "WARNING": 0.5,
-        "CRITICAL": 0.1,
-        "EXTREME": 0.0,
-    }
-    crash_f = crash_factors.get(crash_severity, 1.0)
-
-    # 4. Regime maturity factor
-    maturity_factors = {
-        "EARLY": 0.7,
-        "NORMAL": 1.0,
-        "MATURE": 1.1,
-    }
-    maturity_f = maturity_factors.get(regime_maturity, 1.0)
-
-    # 5. Confidence factor (maps 0.3-0.9 → 0.6-1.2)
-    conf_f = 0.4 + composite_confidence * 0.9  # conf=0→0.4, conf=0.5→0.85, conf=1→1.3
-    conf_f = max(0.4, min(conf_f, 1.3))
-
-    # 6. Score extremity bonus (strong signals = more conviction)
-    # Score near 50 = uncertain = reduce; score near 0 or 100 = clear = boost
-    score_distance = abs(composite_score - 50.0) / 50.0  # 0-1
-    extremity_f = 0.8 + score_distance * 0.4  # range 0.8-1.2
-
-    # Final composite
-    position_size = base * regime_f * crash_f * maturity_f * conf_f * extremity_f
-    position_size = max(0.0, min(position_size, 2.0))
-
-    # Convert to percentage (assume normal = 100% of per-stock allocation)
-    position_pct = min(position_size * 100, 200)
-
-    # Recommendation label
-    if position_size >= 1.5:
-        recommendation = "AGGRESSIVE"
-    elif position_size >= 1.0:
-        recommendation = "FULL"
-    elif position_size >= 0.6:
-        recommendation = "NORMAL"
-    elif position_size >= 0.3:
-        recommendation = "REDUCED"
-    elif position_size > 0:
-        recommendation = "MINIMAL"
-    else:
-        recommendation = "ZERO"
-
-    return {
-        "position_size": round(position_size, 3),
-        "position_pct": round(position_pct, 1),
-        "recommendation": recommendation,
-        "factors": {
-            "base_risk": round(base, 3),
-            "regime_factor": round(regime_f, 3),
-            "crash_factor": round(crash_f, 3),
-            "maturity_factor": round(maturity_f, 3),
-            "confidence_factor": round(conf_f, 3),
-            "extremity_factor": round(extremity_f, 3),
-        },
-    }
-
-
-# =============================================================================
-# 8. AGENT ORCHESTRATOR — Adaptive Orchestrator with Safety Override
+# 8. AGENT ORCHESTRATOR — Runs All Agents + Master Decision
 # =============================================================================
 
 class AgentOrchestrator:
     """
-    Adaptive orchestrator with safety override.
-
-    Phase 1 enhancements over static weighted average:
-      A. Dynamic Regime Weighting — weights change per market regime
-      B. Hierarchical Crash Override — kill-switch before scoring
-      C. Confidence-Weighted Scoring — confidence modulates weights
-      D. Conflict Resolution Enhancement — auto-resolve with degradation
-      E. Agent Reliability Tracking — rolling winrate modulates confidence
-      F. Regime Transition Bonus/Penalty — early vs mature regime adjust
-      G. Position Sizing Integration — composite position from all factors
-
-    Flow:
-      1. Check crash override (kill-switch) → if EXTREME, exit immediately
-      2. Run all specialized agents → get scores + confidence
-      3. Determine regime → get dynamic weights (A)
-      4. Apply confidence weighting to blend weights (C)
-      5. Apply reliability modifiers to confidence (E)
-      6. Apply regime transition adjustment (F)
-      7. Resolve conflicts with enhanced logic (D)
-      8. Master decision with fully-adaptive weights
-      9. Compute composite position size (G)
-      10. Apply crash WARNING cap if active (B)
+    Orchestrates all specialized agents and produces a complete analysis.
 
     Usage:
         orchestrator = AgentOrchestrator()
@@ -1803,36 +1014,14 @@ class AgentOrchestrator:
                                            macro_data, sentiment_data)
     """
 
-    def __init__(
-        self,
-        custom_weights: Optional[Dict[str, float]] = None,
-        enable_regime_weighting: bool = True,
-        enable_crash_override: bool = True,
-        enable_reliability_tracking: bool = True,
-        enable_confidence_weighting: bool = True,
-        enable_conflict_resolution: bool = True,
-        enable_regime_transition: bool = True,
-        enable_position_sizing: bool = True,
-        crash_config: Optional[Dict[str, Any]] = None,
-        reliability_window: int = 30,
-        confidence_blend_factor: float = 0.3,
-    ):
+    def __init__(self, custom_weights: Optional[Dict[str, float]] = None):
         """
-        Initialize adaptive orchestrator.
+        Initialize orchestrator with default or custom agent weights.
 
         Args:
-            custom_weights: Dict of agent_name -> weight (0-1). Used as
-                           DEFAULT weights when regime weighting is disabled.
-            enable_regime_weighting: Phase 1A — dynamic weights per regime
-            enable_crash_override: Phase 1B — hierarchical crash kill-switch
-            enable_reliability_tracking: Phase 1E — rolling winrate tracking
-            enable_confidence_weighting: Phase 1C — confidence blends weights
-            enable_conflict_resolution: Phase 1D — enhanced conflict auto-resolve
-            enable_regime_transition: Phase 1F — early/mature regime adjustment
-            enable_position_sizing: Phase 1G — composite position size
-            crash_config: Override crash override thresholds
-            reliability_window: Rolling window size for winrate tracking
-            confidence_blend_factor: How much confidence affects weights (0-1)
+            custom_weights: Dict of agent_name -> weight (0-1).
+                           Default: TrendAgent=0.30, SmartMoney=0.25,
+                           Risk=0.25, Macro=0.20
         """
         self.trend_agent = TrendAgent(weight=0.30)
         self.smart_money_agent = SmartMoneyAgent(weight=0.25)
@@ -1840,27 +1029,7 @@ class AgentOrchestrator:
         self.macro_agent = MacroAgent(weight=0.20)
         self.master = MasterDecisionAgent()
 
-        # Phase 1 feature flags
-        self.enable_regime_weighting = enable_regime_weighting
-        self.enable_crash_override = enable_crash_override
-        self.enable_reliability_tracking = enable_reliability_tracking
-        self.enable_confidence_weighting = enable_confidence_weighting
-        self.enable_conflict_resolution = enable_conflict_resolution
-        self.enable_regime_transition = enable_regime_transition
-        self.enable_position_sizing = enable_position_sizing
-
-        # Phase 1B: Crash override config
-        self.crash_config = crash_config
-
-        # Phase 1C: Confidence blend factor
-        self.confidence_blend_factor = confidence_blend_factor
-
-        # Phase 1E: Reliability tracker
-        self.reliability_tracker = AgentReliabilityTracker(
-            window_size=reliability_window
-        )
-
-        # Override default weights if provided
+        # Override weights if provided
         if custom_weights:
             for name, weight in custom_weights.items():
                 agent = self._get_agent_by_name(name)
@@ -1895,13 +1064,6 @@ class AgentOrchestrator:
         """
         Run complete multi-agent analysis for a single ticker.
 
-        Enhanced flow (Phase 1):
-          1. Check crash override FIRST (kill-switch)
-          2. Run all specialized agents
-          3. Determine dynamic weights from regime
-          4. Apply reliability modifiers
-          5. Master decision with adaptive weights
-
         Args:
             ticker: Stock ticker (e.g., "BBCA")
             signal_data: Trend/technical data (EMA, HMA, ADX, etc.)
@@ -1914,34 +1076,6 @@ class AgentOrchestrator:
         """
         analysis = FullAnalysis(ticker=ticker)
         agent_outputs = {}
-
-        # ═══ PHASE 1B: CRASH OVERRIDE — Check before running agents ═══
-        crash_result = CrashOverrideResult()
-        if self.enable_crash_override:
-            crash_result = check_crash_override(
-                signal_data=signal_data,
-                extended_data=extended_data,
-                macro_data=macro_data,
-                config=self.crash_config,
-            )
-            if crash_result.triggered and crash_result.severity == "EXTREME":
-                # EXTREME: Skip all agent processing, force immediate exit
-                logger.warning(
-                    f"[{ticker}] CRASH OVERRIDE EXTREME triggered: "
-                    f"{crash_result.override_reasons}"
-                )
-                analysis.master_decision = MasterDecision(
-                    ticker=ticker,
-                    action=crash_result.forced_action,
-                    score=crash_result.forced_score,
-                    confidence=0.95,
-                    reasoning=self._format_crash_reasoning(ticker, crash_result),
-                    risk_level="EXTREME",
-                    position_size_modifier=0.0,
-                )
-                return analysis
-
-        # ═══ Run Specialized Agents ═══
 
         # --- Run Trend Agent ---
         try:
@@ -1983,192 +1117,17 @@ class AgentOrchestrator:
             logger.error(f"MacroAgent failed for {ticker}: {e}")
             analysis.errors.append(f"MacroAgent: {str(e)}")
 
-        # ═══ PHASE 1A: DYNAMIC REGIME WEIGHTING ═══
-        regime = self._extract_regime(signal_data, macro_data)
-
-        if self.enable_regime_weighting:
-            weights = get_regime_weights(regime)
-            # Only include agents that produced output
-            weights = {k: v for k, v in weights.items() if k in agent_outputs}
-        else:
-            # Fallback to static agent default weights
-            weights = {a.name: a.weight for a in self.agents if a.name in agent_outputs}
-
-        # Normalize weights
-        total_w = sum(weights.values())
-        if total_w > 0:
-            weights = {k: v / total_w for k, v in weights.items()}
-
-        # ═══ PHASE 1C: CONFIDENCE-WEIGHTED SCORING ═══
-        if self.enable_confidence_weighting and agent_outputs:
-            weights = apply_confidence_weighting(
-                weights, agent_outputs, blend_factor=self.confidence_blend_factor
-            )
-
-        # ═══ PHASE 1E: RELIABILITY-ADJUSTED CONFIDENCE ═══
-        if self.enable_reliability_tracking:
-            for agent_name, output in agent_outputs.items():
-                modifier = self.reliability_tracker.get_confidence_modifier(agent_name)
-                # Modulate confidence: high winrate → boost, low winrate → reduce
-                original_conf = output.confidence
-                adjusted_conf = np.clip(original_conf * modifier, 0.1, 0.99)
-                output.confidence = round(float(adjusted_conf), 3)
-                if modifier != 1.0:
-                    logger.debug(
-                        f"[{ticker}] {agent_name} confidence: "
-                        f"{original_conf:.3f} → {adjusted_conf:.3f} "
-                        f"(winrate modifier={modifier:.3f})"
-                    )
-
-        # ═══ PHASE 1F: REGIME TRANSITION ADJUSTMENT ═══
-        regime_transition_info = {"regime_maturity": "NORMAL", "note": ""}
-        if self.enable_regime_transition:
-            days_in_regime = 0
-            previous_regime = None
-            if signal_data:
-                days_in_regime = int(signal_data.get("days_in_regime", 0))
-                previous_regime = signal_data.get("previous_regime")
-            regime_transition_info = compute_regime_transition_adjustment(
-                regime=regime,
-                days_in_regime=days_in_regime,
-                previous_regime=previous_regime,
-            )
-            # Apply confidence modifier from regime maturity
-            rt_conf_mod = regime_transition_info["confidence_modifier"]
-            if rt_conf_mod != 1.0:
-                for agent_name, output in agent_outputs.items():
-                    output.confidence = round(
-                        float(np.clip(output.confidence * rt_conf_mod, 0.1, 0.99)), 3
-                    )
-
-        # ═══ PHASE 1B: CRASH OVERRIDE — CRITICAL/WARNING level ═══
-        if crash_result.triggered:
-            # CRITICAL or WARNING — override after scoring
-            logger.warning(
-                f"[{ticker}] CRASH OVERRIDE {crash_result.severity}: "
-                f"{crash_result.override_reasons}"
-            )
-
-            if crash_result.severity == "CRITICAL":
-                # Force SELL, ignore agent scores
-                # Compute position size even for override
-                pos_info = {"position_size": 0.1, "position_pct": 10.0,
-                            "recommendation": "MINIMAL", "factors": {}}
-                if self.enable_position_sizing:
-                    pos_info = compute_composite_position_size(
-                        risk_agent_modifier=0.2,
-                        regime=regime,
-                        crash_severity="CRITICAL",
-                        regime_maturity=regime_transition_info.get("regime_maturity", "NORMAL"),
-                        composite_confidence=0.9,
-                        composite_score=crash_result.forced_score,
-                    )
-                analysis.master_decision = MasterDecision(
-                    ticker=ticker,
-                    action=crash_result.forced_action,
-                    score=crash_result.forced_score,
-                    confidence=0.9,
-                    reasoning=self._format_crash_reasoning(
-                        ticker, crash_result, agent_outputs
-                    ),
-                    agent_scores={n: o.score for n, o in agent_outputs.items()},
-                    agent_confidences={n: o.confidence for n, o in agent_outputs.items()},
-                    conflicts=[f"CRASH_OVERRIDE_{crash_result.severity}"] + crash_result.override_reasons,
-                    risk_level="EXTREME",
-                    position_size_modifier=round(pos_info["position_size"], 3),
-                )
-                return analysis
-
-            elif crash_result.severity == "WARNING":
-                # Let master decide but cap the score
-                pass  # Will apply cap after master.decide()
-
-        # ═══ Master Decision (with adaptive weights) ═══
+        # --- Master Decision ---
         try:
+            # Use agent default weights
+            weights = {a.name: a.weight for a in self.agents if a.name in agent_outputs}
+            # Normalize
+            total_w = sum(weights.values())
+            if total_w > 0:
+                weights = {k: v / total_w for k, v in weights.items()}
+
             master_decision = self.master.decide(ticker, agent_outputs, weights)
-
-            # ═══ PHASE 1D: CONFLICT RESOLUTION ENHANCEMENT ═══
-            if self.enable_conflict_resolution and agent_outputs:
-                conflict_res = resolve_conflicts_enhanced(
-                    agent_outputs=agent_outputs,
-                    composite_score=master_decision.score,
-                    composite_confidence=master_decision.confidence,
-                    regime=regime,
-                )
-                # Apply adjustments
-                if conflict_res.score_adjustment != 0:
-                    master_decision.score = round(float(np.clip(
-                        master_decision.score + conflict_res.score_adjustment, 0, 100
-                    )), 2)
-                if conflict_res.confidence_penalty != 0:
-                    master_decision.confidence = round(float(np.clip(
-                        master_decision.confidence - conflict_res.confidence_penalty, 0.1, 0.99
-                    )), 3)
-                # Recalculate action if score changed
-                if conflict_res.score_adjustment != 0 or conflict_res.confidence_penalty != 0:
-                    master_decision.action = self.master._score_to_action(
-                        master_decision.score, master_decision.confidence
-                    )
-                # Add resolution info to conflicts
-                master_decision.conflicts.extend(conflict_res.resolved_conflicts)
-                master_decision.conflicts.extend(conflict_res.resolution_notes)
-
-            # ═══ PHASE 1F: Apply regime transition score adjustment ═══
-            if self.enable_regime_transition:
-                rt_score_adj = regime_transition_info.get("score_adjustment", 0.0)
-                if rt_score_adj != 0:
-                    master_decision.score = round(float(np.clip(
-                        master_decision.score + rt_score_adj, 0, 100
-                    )), 2)
-                    master_decision.action = self.master._score_to_action(
-                        master_decision.score, master_decision.confidence
-                    )
-                    if regime_transition_info.get("note"):
-                        master_decision.conflicts.append(
-                            f"REGIME_TRANSITION: {regime_transition_info['note']}"
-                        )
-
-            # Apply WARNING cap if active
-            if crash_result.triggered and crash_result.severity == "WARNING":
-                if master_decision.score > crash_result.forced_score:
-                    original_score = master_decision.score
-                    master_decision.score = crash_result.forced_score
-                    # Recalculate action based on capped score
-                    master_decision.action = self.master._score_to_action(
-                        master_decision.score, master_decision.confidence
-                    )
-                    master_decision.conflicts.append(
-                        f"CRASH_WARNING_CAP: Score capped {original_score:.1f} → "
-                        f"{crash_result.forced_score:.1f}"
-                    )
-                    master_decision.conflicts.extend(crash_result.override_reasons)
-
-            # ═══ PHASE 1G: COMPOSITE POSITION SIZING ═══
-            if self.enable_position_sizing:
-                risk_output = agent_outputs.get("RiskAgent")
-                risk_mod = 1.0
-                if risk_output:
-                    risk_mod = risk_output.factors.get("position_size_modifier", 1.0)
-
-                pos_info = compute_composite_position_size(
-                    risk_agent_modifier=risk_mod,
-                    regime=regime,
-                    crash_severity=crash_result.severity if crash_result.triggered else "NONE",
-                    regime_maturity=regime_transition_info.get("regime_maturity", "NORMAL"),
-                    composite_confidence=master_decision.confidence,
-                    composite_score=master_decision.score,
-                )
-                master_decision.position_size_modifier = pos_info["position_size"]
-                # Store full position info in agent_scores for transparency
-                master_decision.agent_scores["_position_sizing"] = pos_info
-
-            # Annotate with regime weighting info
-            master_decision.agent_scores["_regime"] = regime
-            master_decision.agent_scores["_regime_weights"] = weights
-            master_decision.agent_scores["_regime_maturity"] = regime_transition_info.get("regime_maturity", "NORMAL")
-
             analysis.master_decision = master_decision
-
         except Exception as e:
             logger.error(f"MasterDecisionAgent failed for {ticker}: {e}")
             analysis.errors.append(f"MasterDecision: {str(e)}")
@@ -2247,74 +1206,6 @@ class AgentOrchestrator:
             combined["sentiment_score"] = sentiment_data.get("sentiment_score", 50.0)
         return combined
 
-    def _extract_regime(
-        self,
-        signal_data: Optional[Dict],
-        macro_data: Optional[Dict],
-    ) -> str:
-        """
-        Extract current market regime from available data sources.
-        Priority: signal_data['regime'] > macro_data['market_regime'] > 'SIDEWAYS'
-        """
-        if signal_data and signal_data.get("regime"):
-            return str(signal_data["regime"]).upper().strip()
-        if macro_data and macro_data.get("market_regime"):
-            return str(macro_data["market_regime"]).upper().strip()
-        return "SIDEWAYS"
-
-    def _format_crash_reasoning(
-        self,
-        ticker: str,
-        crash_result: CrashOverrideResult,
-        agent_outputs: Optional[Dict[str, AgentOutput]] = None,
-    ) -> str:
-        """Format crash override reasoning into human-readable narrative."""
-        parts = [
-            f"[{ticker}] ⚠️  CRASH OVERRIDE — Severity: {crash_result.severity}",
-            f"Forced Action: {crash_result.forced_action} (score={crash_result.forced_score})",
-            "",
-            "Override Triggers:",
-        ]
-        for reason in crash_result.override_reasons:
-            parts.append(f"  • {reason}")
-
-        if agent_outputs:
-            parts.append("")
-            parts.append("Agent scores at time of override:")
-            for name, output in agent_outputs.items():
-                parts.append(f"  {name}: {output.score:.0f}/100 (conf={output.confidence:.1%})")
-
-        parts.append("")
-        parts.append(
-            "Note: This override bypasses normal scoring to protect capital. "
-            "Manual review recommended."
-        )
-        return "\n".join(parts)
-
-    def record_outcome(
-        self,
-        agent_scores: Dict[str, float],
-        actual_return_5d: float,
-    ) -> None:
-        """
-        Record outcome for reliability tracking (Phase 1E).
-        Call this after the 5-day forward return is known.
-
-        Args:
-            agent_scores: Dict of agent_name -> score at decision time
-            actual_return_5d: Actual 5-day forward return (%)
-        """
-        if self.enable_reliability_tracking:
-            self.reliability_tracker.record_outcome(agent_scores, actual_return_5d)
-
-    def get_reliability_stats(self) -> Dict[str, Any]:
-        """Get current reliability tracking statistics."""
-        return self.reliability_tracker.get_stats()
-
-    def get_current_regime_weights(self, regime: str = "DEFAULT") -> Dict[str, float]:
-        """Get the weight profile for a given regime (for inspection)."""
-        return get_regime_weights(regime)
-
 
 
 # =============================================================================
@@ -2323,20 +1214,46 @@ class AgentOrchestrator:
 
 class AdaptiveLearning:
     """
-    Tracks agent decisions and actual outcomes to enable weight adjustment.
+    Tracks agent decisions and actual outcomes to enable AUTO weight adjustment.
     Stores decisions in a simple JSON log (data/agent_decisions.json).
 
-    This is a stub — full implementation will use backtesting results.
+    Auto-Retrain Logic:
+        - After every N new outcomes (configurable, default=20), recalculates
+          agent accuracy and adjusts weights automatically.
+        - Uses exponential decay to weight recent decisions more heavily.
+        - Minimum floor weight (0.10) prevents any agent from being zeroed out.
+        - Maximum ceiling weight (0.45) prevents over-reliance on single agent.
+
+    Dynamic Weights:
+        - Weights are proportional to rolling accuracy (last 50-100 decisions).
+        - Accuracy formula: bullish+up = correct, bearish+down = correct,
+          neutral = 0.5 correct.
+        - Decay factor: recent decisions weighted 2x more than older ones.
     """
 
     DEFAULT_LOG_PATH = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "data", "agent_decisions.json"
     )
+    WEIGHTS_PATH = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "data", "agent_weights.json"
+    )
 
-    def __init__(self, log_path: Optional[str] = None):
+    # Auto-retrain configuration
+    RETRAIN_THRESHOLD = 20       # Retrain after this many new outcomes
+    MIN_OUTCOMES_FOR_RETRAIN = 10  # Minimum outcomes needed before first retrain
+    ROLLING_WINDOW = 100         # Rolling window for accuracy calculation
+    DECAY_FACTOR = 0.97          # Exponential decay per decision (recent = more weight)
+    MIN_WEIGHT = 0.10            # Floor: no agent below 10%
+    MAX_WEIGHT = 0.45            # Ceiling: no agent above 45%
+
+    def __init__(self, log_path: Optional[str] = None, auto_retrain: bool = True):
         self.log_path = log_path or self.DEFAULT_LOG_PATH
+        self.auto_retrain = auto_retrain
         self._decisions: List[Dict[str, Any]] = []
+        self._last_retrain_count: int = 0  # Outcomes count at last retrain
+        self._current_weights: Dict[str, float] = {}  # Persisted weights
         self._load_log()
+        self._load_weights()
 
     def _load_log(self) -> None:
         """Load existing decision log from disk."""
@@ -2358,6 +1275,34 @@ class AdaptiveLearning:
         except (IOError, OSError) as e:
             logger.error(f"Could not save decision log: {e}")
 
+    def _load_weights(self) -> None:
+        """Load persisted dynamic weights from disk."""
+        try:
+            if os.path.exists(self.WEIGHTS_PATH):
+                with open(self.WEIGHTS_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self._current_weights = data.get("weights", {})
+                self._last_retrain_count = data.get("last_retrain_count", 0)
+                logger.info(f"Loaded dynamic weights: {self._current_weights}")
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Could not load weights: {e}")
+            self._current_weights = {}
+
+    def _save_weights(self) -> None:
+        """Persist dynamic weights to disk."""
+        try:
+            os.makedirs(os.path.dirname(self.WEIGHTS_PATH), exist_ok=True)
+            data = {
+                "weights": self._current_weights,
+                "last_retrain_count": self._last_retrain_count,
+                "last_retrain_time": datetime.now().isoformat(),
+                "accuracies": self.get_all_accuracies(),
+            }
+            with open(self.WEIGHTS_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except (IOError, OSError) as e:
+            logger.error(f"Could not save weights: {e}")
+
     def record_decision(
         self,
         ticker: str,
@@ -2366,6 +1311,7 @@ class AdaptiveLearning:
     ) -> None:
         """
         Record a decision (and optionally its outcome).
+        If auto_retrain=True and enough new outcomes accumulated, triggers retrain.
 
         Args:
             ticker: Stock ticker
@@ -2390,6 +1336,10 @@ class AdaptiveLearning:
         self._decisions.append(record)
         self._save_log()
         logger.info(f"Recorded decision for {ticker}: {decision.action}")
+
+        # Auto-retrain check
+        if self.auto_retrain and actual_outcome is not None:
+            self._check_retrain_needed()
 
     def update_outcome(
         self,
@@ -2417,9 +1367,10 @@ class AdaptiveLearning:
 
     def get_agent_accuracy(self, agent_name: str, last_n: int = 100) -> float:
         """
-        Compute accuracy of a specific agent over recent decisions.
+        Compute DECAY-WEIGHTED accuracy of a specific agent over recent decisions.
 
-        Accuracy = % of decisions where agent's direction matched outcome.
+        Uses exponential decay so recent decisions carry more weight than older ones.
+        Accuracy = weighted % of decisions where agent's direction matched outcome.
 
         Args:
             agent_name: Name of the agent (e.g., "TrendAgent")
@@ -2438,12 +1389,16 @@ class AdaptiveLearning:
             return 0.5  # Not enough data
 
         recent = with_outcomes[-last_n:]
-        correct = 0
+        weighted_correct = 0.0
+        total_weight = 0.0
 
-        for record in recent:
+        for idx, record in enumerate(recent):
             agent_score = record["agent_scores"][agent_name]
             outcome = record["outcome"]
             return_5d = outcome.get("return_5d", 0)
+
+            # Exponential decay: most recent = highest weight
+            decay_weight = self.DECAY_FACTOR ** (len(recent) - 1 - idx)
 
             # Agent was bullish (score > 55) and stock went up, or
             # Agent was bearish (score < 45) and stock went down
@@ -2453,12 +1408,17 @@ class AdaptiveLearning:
             stock_down = return_5d < 0
 
             if (agent_bullish and stock_up) or (agent_bearish and stock_down):
-                correct += 1
+                weighted_correct += decay_weight * 1.0
             elif not agent_bullish and not agent_bearish:
                 # Neutral — count as half correct
-                correct += 0.5
+                weighted_correct += decay_weight * 0.5
 
-        return round(correct / len(recent), 4)
+            total_weight += decay_weight
+
+        if total_weight == 0:
+            return 0.5
+
+        return round(weighted_correct / total_weight, 4)
 
     def get_all_accuracies(self, last_n: int = 100) -> Dict[str, float]:
         """Get accuracy for all agents."""
@@ -2467,17 +1427,17 @@ class AdaptiveLearning:
 
     def adjust_weights(self, orchestrator: 'AgentOrchestrator', last_n: int = 100) -> Dict[str, float]:
         """
-        Auto-adjust agent weights based on recent accuracy.
+        Auto-adjust agent weights based on recent DECAY-WEIGHTED accuracy.
 
         Agents with higher accuracy get proportionally more weight.
-        Minimum weight = 0.10 to prevent any agent from being ignored.
+        Applies floor (MIN_WEIGHT) and ceiling (MAX_WEIGHT) constraints.
 
         Args:
             orchestrator: The AgentOrchestrator whose weights to update
             last_n: Number of recent decisions for accuracy calc
 
         Returns:
-            New weights dict
+            New weights dict (also persisted to disk)
         """
         accuracies = self.get_all_accuracies(last_n)
 
@@ -2486,24 +1446,37 @@ class AdaptiveLearning:
             logger.info("Insufficient data for weight adjustment. Keeping defaults.")
             return {a.name: a.weight for a in orchestrator.agents}
 
-        # Compute new weights proportional to accuracy, with floor.
-        # Agents above 0.5 accuracy get boosted, below 0.5 get penalized,
-        # but never below MIN_WEIGHT and never above MAX_WEIGHT.
-        MIN_WEIGHT = 0.10
-        MAX_WEIGHT = 0.50
+        # Compute new weights proportional to accuracy, with floor/ceiling
         raw_weights = {}
         for name, acc in accuracies.items():
-            # Transform: acc=0.5 → MIN_WEIGHT, acc=1.0 → 1.0
-            # Linear scale from baseline 0.5 upward, floor at MIN_WEIGHT
-            adjusted = MIN_WEIGHT + (acc - 0.5) * (1.0 - MIN_WEIGHT) / 0.5
-            raw_weights[name] = max(adjusted, MIN_WEIGHT)
+            # Boost accuracy above 0.5, penalize below
+            # Use squared accuracy to amplify differences
+            raw_weights[name] = max(acc ** 1.5, self.MIN_WEIGHT)
 
-        # Normalize to sum = 1.0, then enforce MAX_WEIGHT cap
+        # Normalize to sum = 1.0
         total = sum(raw_weights.values())
-        new_weights = {k: min(v / total, MAX_WEIGHT) for k, v in raw_weights.items()}
-        # Re-normalize after capping
-        total2 = sum(new_weights.values())
-        new_weights = {k: v / total2 for k, v in new_weights.items()}
+        new_weights = {k: v / total for k, v in raw_weights.items()}
+
+        # Apply ceiling constraint
+        capped = False
+        for name in new_weights:
+            if new_weights[name] > self.MAX_WEIGHT:
+                new_weights[name] = self.MAX_WEIGHT
+                capped = True
+
+        # Re-normalize after ceiling
+        if capped:
+            total = sum(new_weights.values())
+            new_weights = {k: v / total for k, v in new_weights.items()}
+
+        # Apply floor constraint
+        for name in new_weights:
+            if new_weights[name] < self.MIN_WEIGHT:
+                new_weights[name] = self.MIN_WEIGHT
+
+        # Final normalization
+        total = sum(new_weights.values())
+        new_weights = {k: round(v / total, 4) for k, v in new_weights.items()}
 
         # Apply to orchestrator
         for name, weight in new_weights.items():
@@ -2511,8 +1484,96 @@ class AdaptiveLearning:
             if agent:
                 agent.weight = weight
 
-        logger.info(f"Weights adjusted: {new_weights}")
+        # Persist weights
+        self._current_weights = new_weights
+        self._save_weights()
+
+        logger.info(f"Weights adjusted (auto-retrain): {new_weights}")
+        logger.info(f"  Accuracies: {accuracies}")
         return new_weights
+
+    def _check_retrain_needed(self) -> None:
+        """
+        Check if auto-retrain should be triggered.
+        Called automatically after each new outcome is recorded.
+        """
+        current_outcomes = sum(1 for d in self._decisions if d.get("outcome"))
+
+        # Need minimum outcomes before first retrain
+        if current_outcomes < self.MIN_OUTCOMES_FOR_RETRAIN:
+            return
+
+        # Check if enough new outcomes since last retrain
+        new_since_last = current_outcomes - self._last_retrain_count
+        if new_since_last >= self.RETRAIN_THRESHOLD:
+            logger.info(
+                f"Auto-retrain triggered: {new_since_last} new outcomes "
+                f"(threshold={self.RETRAIN_THRESHOLD})"
+            )
+            self._last_retrain_count = current_outcomes
+            # Note: actual weight adjustment happens when apply_dynamic_weights() is called
+            # This just marks that retrain is needed
+            self._save_weights()
+
+    def retrain_if_needed(self, orchestrator: 'AgentOrchestrator') -> Optional[Dict[str, float]]:
+        """
+        Check if retrain is needed and apply new weights if so.
+        Call this at the START of each analysis cycle (e.g., daily EOD run).
+
+        Args:
+            orchestrator: The AgentOrchestrator to update
+
+        Returns:
+            New weights dict if retrained, None if not needed
+        """
+        current_outcomes = sum(1 for d in self._decisions if d.get("outcome"))
+
+        if current_outcomes < self.MIN_OUTCOMES_FOR_RETRAIN:
+            return None
+
+        new_since_last = current_outcomes - self._last_retrain_count
+        if new_since_last >= self.RETRAIN_THRESHOLD:
+            logger.info(f"Retrain triggered: {new_since_last} new outcomes accumulated")
+            self._last_retrain_count = current_outcomes
+            return self.adjust_weights(orchestrator, self.ROLLING_WINDOW)
+
+        return None
+
+    def apply_dynamic_weights(self, orchestrator: 'AgentOrchestrator') -> Dict[str, float]:
+        """
+        Apply previously computed dynamic weights to orchestrator.
+        Call this at startup to restore last-known-good weights.
+
+        If no dynamic weights saved, uses orchestrator defaults.
+
+        Args:
+            orchestrator: The AgentOrchestrator to configure
+
+        Returns:
+            Applied weights dict
+        """
+        if not self._current_weights:
+            # No saved weights — use defaults
+            return {a.name: a.weight for a in orchestrator.agents}
+
+        # Apply saved weights
+        for name, weight in self._current_weights.items():
+            agent = orchestrator._get_agent_by_name(name)
+            if agent:
+                agent.weight = weight
+
+        logger.info(f"Applied dynamic weights from disk: {self._current_weights}")
+        return self._current_weights
+
+    def get_weight_history(self) -> Dict[str, Any]:
+        """Get current weight state and metadata."""
+        return {
+            "current_weights": self._current_weights,
+            "last_retrain_count": self._last_retrain_count,
+            "total_outcomes": sum(1 for d in self._decisions if d.get("outcome")),
+            "next_retrain_at": self._last_retrain_count + self.RETRAIN_THRESHOLD,
+            "accuracies": self.get_all_accuracies(),
+        }
 
     def get_decision_history(
         self,
@@ -2835,6 +1896,7 @@ if __name__ == "__main__":
     print("─" * 70)
 
     # Use a temp path for testing (avoid polluting data/)
+    import tempfile
     temp_log = os.path.join(tempfile.gettempdir(), "pixellent_test_decisions.json")
     learner = AdaptiveLearning(log_path=temp_log)
 

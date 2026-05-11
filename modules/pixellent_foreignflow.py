@@ -42,7 +42,7 @@ IDX_SECTORS = {
         'MITI', 'PSAB', 'SMMT', 'ZINC', 'BRMS', 'UNTR', 'BYAN',
     ],
     'CONSUMER': [
-        'UNVR', 'ICBP', 'INDF', 'KLBF', 'SIDO', 'MIKA', 'AMRT', 'ACES',
+        'UNVR', 'ICBP', 'INDF', 'KLBF', 'SIDO', 'AMRT', 'ACES',
         'MYOR', 'GGRM', 'HMSP', 'CLEO', 'ULTJ', 'TSPC', 'KAEF', 'DVLA',
         'MAPI', 'RALS', 'LPPF', 'ERAA', 'HERO', 'MIDI', 'AVIA',
     ],
@@ -169,7 +169,7 @@ def analyze_stock_foreign_flow(
 
 def _compute_streak(net: pd.Series) -> pd.Series:
     """
-    Compute consecutive net buy/sell streak — VECTORIZED.
+    Compute consecutive net buy/sell streak.
     Positive = N days consecutive net buy
     Negative = N days consecutive net sell
     """

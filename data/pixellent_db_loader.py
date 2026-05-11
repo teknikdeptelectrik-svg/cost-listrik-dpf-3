@@ -21,10 +21,10 @@ Usage:
 
 import os
 import logging
+import traceback
 from datetime import date, datetime
 from typing import Optional, List, Tuple
 
-import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -46,12 +46,30 @@ def get_db_engine(
     user: str = None,
     password: str = None,
 ) -> Engine:
-    """Create SQLAlchemy engine for PostgreSQL. Uses env vars as defaults."""
+    """
+    Create SQLAlchemy engine for PostgreSQL.
+
+    Credentials are resolved in this order:
+    1. Explicit function arguments
+    2. Environment variables (PIXELLENT_DB_HOST, etc.)
+    3. No hardcoded defaults — raises ValueError if credentials are missing.
+
+    Required env vars (if not passed explicitly):
+        PIXELLENT_DB_HOST, PIXELLENT_DB_PORT, PIXELLENT_DB_NAME,
+        PIXELLENT_DB_USER, PIXELLENT_DB_PASSWORD
+    """
     host = host or os.environ.get('PIXELLENT_DB_HOST', 'localhost')
     port = port or int(os.environ.get('PIXELLENT_DB_PORT', '5432'))
-    dbname = dbname or os.environ.get('PIXELLENT_DB_NAME', 'pixellent_db')
-    user = user or os.environ.get('PIXELLENT_DB_USER', 'pixellent')
-    password = password or os.environ.get('PIXELLENT_DB_PASSWORD', 'pixellent')
+    dbname = dbname or os.environ.get('PIXELLENT_DB_NAME', '')
+    user = user or os.environ.get('PIXELLENT_DB_USER', '')
+    password = password or os.environ.get('PIXELLENT_DB_PASSWORD', '')
+
+    if not dbname or not user:
+        raise ValueError(
+            "Database credentials not provided. Set PIXELLENT_DB_NAME and "
+            "PIXELLENT_DB_USER environment variables, or pass them explicitly."
+        )
+
     url = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
     return create_engine(url, pool_size=5, max_overflow=10)
 
@@ -109,6 +127,7 @@ def load_stock_db(
             df = pd.read_sql(text(query), conn, params=params, parse_dates=['trade_date'])
     except Exception as e:
         logger.warning(f"DB load failed for {ticker_clean}: {e}")
+        logger.debug(traceback.format_exc())
         return pd.DataFrame()
 
     if df.empty:
@@ -122,7 +141,7 @@ def load_stock_db(
     # Ensure numeric types
     for col in ['open', 'high', 'low', 'close']:
         df[col] = pd.to_numeric(df[col], errors='coerce')
-    df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0).astype('int64')
+    df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0).astype('float64')
 
     # Drop rows with NaN in OHLC
     df = df.dropna(subset=['open', 'high', 'low', 'close'])
@@ -146,8 +165,19 @@ def load_ihsg_db(
     Returns DataFrame with columns: close, high, low, has_hl
     Index: DatetimeIndex
 
-    Note: IHSG data comes from ihsg_daily table.
-    If not available, falls back to computing from market-wide data.
+    Data sources (tried in order):
+        1. ihsg_daily table (dedicated IHSG table)
+        2. raw_daily_data with ticker IN ('IHSG', '^JKSE', 'JKSE', 'COMPOSITE')
+           — picks the ticker with the most data rows
+
+    Note on High/Low proxy:
+        If ihsg_daily does not have high/low columns, values are estimated as
+        close * 1.005 / close * 0.995. This proxy may distort ATR-based regime
+        detection during volatile periods. has_hl=False indicates proxy is used.
+
+    Schema requirement:
+        ihsg_daily table must have UNIQUE constraint on trade_date for
+        ingest_ihsg_from_raw() ON CONFLICT to work correctly.
     """
     # ── Try ihsg_daily table first ──
     query = """
@@ -183,35 +213,44 @@ def load_ihsg_db(
 
             return result.dropna(subset=['close'])
     except Exception as e:
-        logger.info(f"ihsg_daily table not available: {e}, trying raw_daily_data...")
+        logger.info(f"ihsg_daily table not available: {e}, trying raw_daily_data fallback...")
+        logger.debug(traceback.format_exc())
 
-    # ── Fallback: Look for ^JKSE or IHSG in raw_daily_data ──
-    for ihsg_ticker in ['IHSG', '^JKSE', 'JKSE', 'COMPOSITE']:
-        query2 = """
-            SELECT trade_date, open_price, high, low, close, volume
-            FROM raw_daily_data
-            WHERE ticker = :ticker AND trade_date >= :start_date AND close > 0
-        """
-        params2 = {'ticker': ihsg_ticker, 'start_date': start}
-        if end:
-            query2 += " AND trade_date <= :end_date"
-            params2['end_date'] = end
-        query2 += " ORDER BY trade_date ASC"
+    # ── Fallback: Look for IHSG candidates in raw_daily_data (single query) ──
+    # Uses IN clause to find the best source in one round-trip.
+    query2 = """
+        SELECT ticker, trade_date, open_price, high, low, close, volume
+        FROM raw_daily_data
+        WHERE ticker IN ('IHSG', '^JKSE', 'JKSE', 'COMPOSITE')
+          AND trade_date >= :start_date AND close > 0
+    """
+    params2 = {'start_date': start}
+    if end:
+        query2 += " AND trade_date <= :end_date"
+        params2['end_date'] = end
+    query2 += " ORDER BY trade_date ASC"
 
-        try:
-            with engine.connect() as conn:
-                df = pd.read_sql(text(query2), conn, params=params2, parse_dates=['trade_date'])
-            if not df.empty:
-                df = df.set_index('trade_date')
-                df.index = pd.DatetimeIndex(df.index)
-                result = pd.DataFrame(index=df.index)
-                result['close'] = pd.to_numeric(df['close'], errors='coerce')
-                result['high'] = pd.to_numeric(df['high'], errors='coerce')
-                result['low'] = pd.to_numeric(df['low'], errors='coerce')
-                result['has_hl'] = True
-                return result.dropna(subset=['close'])
-        except Exception:
-            continue
+    try:
+        with engine.connect() as conn:
+            df_all = pd.read_sql(text(query2), conn, params=params2, parse_dates=['trade_date'])
+
+        if not df_all.empty:
+            # Pick the ticker with the most data rows
+            best_ticker = df_all.groupby('ticker').size().idxmax()
+            df = df_all[df_all['ticker'] == best_ticker].copy()
+            logger.info(f"IHSG fallback: using ticker '{best_ticker}' ({len(df)} rows)")
+
+            df = df.set_index('trade_date')
+            df.index = pd.DatetimeIndex(df.index)
+            result = pd.DataFrame(index=df.index)
+            result['close'] = pd.to_numeric(df['close'], errors='coerce')
+            result['high'] = pd.to_numeric(df['high'], errors='coerce')
+            result['low'] = pd.to_numeric(df['low'], errors='coerce')
+            result['has_hl'] = True
+            return result.dropna(subset=['close'])
+    except Exception as e:
+        logger.warning(f"IHSG fallback query failed: {e}")
+        logger.debug(traceback.format_exc())
 
     # ── Last resort: return empty ──
     logger.warning("IHSG data not found in database. Regime detection will be limited.")
@@ -265,6 +304,7 @@ def load_stock_extended(
             df = pd.read_sql(text(query), conn, params=params, parse_dates=['trade_date'])
     except Exception as e:
         logger.warning(f"Extended load failed for {ticker_clean}: {e}")
+        logger.debug(traceback.format_exc())
         return pd.DataFrame()
 
     if df.empty:
@@ -340,7 +380,8 @@ def get_available_tickers(engine: Engine) -> List[str]:
                 "SELECT DISTINCT ticker FROM raw_daily_data ORDER BY ticker"
             ))
             return [row[0] for row in result]
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to get available tickers: {e}")
         return []
 
 
@@ -353,7 +394,8 @@ def get_data_date_range(engine: Engine) -> Tuple[Optional[date], Optional[date]]
             ))
             row = result.fetchone()
             return row[0], row[1]
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to get date range: {e}")
         return None, None
 
 
@@ -434,7 +476,8 @@ def get_foreign_flow_summary(
             df = pd.read_sql(text(query), conn, params={
                 'ticker': ticker_clean, 'days': days
             }, parse_dates=['trade_date'])
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to get foreign flow for {ticker_clean}: {e}")
         return pd.DataFrame()
 
     if df.empty:
@@ -458,7 +501,8 @@ def get_market_foreign_flow(engine: Engine, trade_date=None) -> pd.DataFrame:
                 trade_date = conn.execute(
                     text("SELECT MAX(trade_date) FROM raw_daily_data")
                 ).scalar()
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to get latest trade date: {e}")
             return pd.DataFrame()
 
     query = """
@@ -471,7 +515,8 @@ def get_market_foreign_flow(engine: Engine, trade_date=None) -> pd.DataFrame:
     try:
         with engine.connect() as conn:
             return pd.read_sql(text(query), conn, params={'d': trade_date})
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to get market foreign flow: {e}")
         return pd.DataFrame()
 
 
@@ -499,6 +544,16 @@ def screen_all_db(
 
     Returns:
         DataFrame with screening results (same format as screen_all())
+
+    Required columns from compute_signals() output:
+        buy_price_final, hard_stop_final, target_final, open, close,
+        buy_signal, sell_signal, vpower, vpower_color, regime, ema_status,
+        hh_ok, trend_age, az_status, rrg_label, rrg_leading, in_position,
+        float_pct, bars_since_buy, dn_fractal, atr14, score, rsi, ac_rel,
+        ihsg_up, likuid
+
+    Note: Currently loads each ticker individually (N queries). For large
+    universes (500+), consider batch-loading approach for better performance.
     """
     from pixellent_signals import compute_signals, DEFAULT_CONFIG, _generate_remarks
 
@@ -514,8 +569,19 @@ def screen_all_db(
     # Load IHSG
     ihsg_df = load_ihsg_db(engine, start)
 
+    # Required columns from compute_signals output
+    REQUIRED_SIGNAL_COLS = [
+        'buy_price_final', 'hard_stop_final', 'target_final',
+        'open', 'close', 'buy_signal', 'sell_signal', 'vpower',
+        'vpower_color', 'regime', 'ema_status', 'hh_ok', 'trend_age',
+        'az_status', 'rrg_label', 'rrg_leading', 'in_position',
+        'float_pct', 'bars_since_buy', 'atr14', 'score', 'rsi',
+        'ac_rel', 'ihsg_up', 'likuid',
+    ]
+
     results = []
     total = len(tickers)
+    skipped = 0
     logger.info(f"Screening {total} saham from database...")
 
     for i, ticker in enumerate(tickers, 1):
@@ -528,8 +594,21 @@ def screen_all_db(
             if sig.empty:
                 continue
 
+            # Validate required columns exist
+            missing_cols = [c for c in REQUIRED_SIGNAL_COLS if c not in sig.columns]
+            if missing_cols:
+                logger.warning(
+                    f"  Skip {ticker}: compute_signals missing columns: {missing_cols[:5]}"
+                )
+                skipped += 1
+                continue
+
+            # Guard: need at least 2 rows for prev comparison
+            if len(sig) < 2:
+                continue
+
             last = sig.iloc[-1]
-            prev = sig.iloc[-2] if len(sig) > 1 else last
+            prev = sig.iloc[-2]
 
             # Entry/Stop/Target (same logic as screen_all)
             entry = (last['buy_price_final']
@@ -549,6 +628,14 @@ def screen_all_db(
             elif last['sell_signal']:
                 sinyal = 'JUAL'
 
+            # Calculate period returns with explicit length check
+            pct_5d = 0.0
+            pct_13d = 0.0
+            if len(sig) >= 5:
+                pct_5d = round((last['close'] / sig.iloc[-5]['close'] - 1) * 100, 2)
+            if len(sig) >= 13:
+                pct_13d = round((last['close'] / sig.iloc[-13]['close'] - 1) * 100, 2)
+
             results.append({
                 'Ticker': ticker,
                 'Sinyal': sinyal,
@@ -566,7 +653,7 @@ def screen_all_db(
                 'Float%': round(last['float_pct'], 2),
                 'BarsHold': int(last['bars_since_buy']),
                 'SL/TS': round(stop, 0),
-                'Support': round(last['dn_fractal'], 0) if not pd.isna(last['dn_fractal']) else '-',
+                'Support': round(last['dn_fractal'], 0) if not pd.isna(last.get('dn_fractal', float('nan'))) else '-',
                 'TP1': round(tgt, 0),
                 'R/R': round(rr, 2),
                 'TP2': round(tgt + last['atr14'] * 0.5, 0),
@@ -574,8 +661,8 @@ def screen_all_db(
                 'RSI': round(last['rsi'], 1),
                 'AC/C': round(last['ac_rel'], 4),
                 '1D%': round((last['close'] / prev['close'] - 1) * 100, 2),
-                '5D%': round((last['close'] / sig.iloc[-5]['close'] - 1) * 100, 2) if len(sig) >= 5 else 0,
-                '13D%': round((last['close'] / sig.iloc[-13]['close'] - 1) * 100, 2) if len(sig) >= 13 else 0,
+                '5D%': pct_5d,
+                '13D%': pct_13d,
                 'Remarks': _generate_remarks(last, cfg),
                 'IHSG_Up': last['ihsg_up'],
                 'Likuid': last['likuid'],
@@ -584,9 +671,17 @@ def screen_all_db(
             if i % 10 == 0:
                 logger.info(f"  [{i}/{total}] processed...")
 
-        except Exception as e:
-            logger.warning(f"  Skip {ticker}: {e}")
+        except KeyError as e:
+            logger.warning(f"  Skip {ticker}: missing column {e}")
+            skipped += 1
             continue
+        except Exception as e:
+            logger.warning(f"  Skip {ticker}: {type(e).__name__}: {e}")
+            logger.debug(traceback.format_exc())
+            skipped += 1
+            continue
+
+    logger.info(f"Screening complete: {len(results)} results, {skipped} skipped")
 
     if not results:
         return pd.DataFrame()
@@ -605,6 +700,12 @@ def ingest_ihsg_from_raw(engine: Engine):
     """
     If IHSG data exists in raw_daily_data (as ticker 'IHSG' or 'COMPOSITE'),
     copy it to ihsg_daily table for faster regime detection.
+
+    Schema requirement:
+        ihsg_daily table MUST have a UNIQUE constraint on trade_date.
+        This is defined in database/schema.sql:
+            trade_date DATE NOT NULL UNIQUE
+        Without this constraint, ON CONFLICT will fail silently.
     """
     for ihsg_ticker in ['IHSG', '^JKSE', 'JKSE', 'COMPOSITE']:
         query = f"""
@@ -628,6 +729,7 @@ def ingest_ihsg_from_raw(engine: Engine):
                     logger.info(f"Synced {result.rowcount} IHSG rows from ticker '{ihsg_ticker}'")
                     return result.rowcount
         except Exception as e:
+            logger.debug(f"ingest_ihsg_from_raw failed for '{ihsg_ticker}': {e}")
             continue
 
     logger.warning("No IHSG data found in raw_daily_data")

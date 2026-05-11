@@ -302,7 +302,10 @@ class Portfolio:
                 "positions": [p.to_dict() for p in self.positions],
                 "closed_positions": [c.to_dict() for c in self.closed_positions]}
         try:
-            with open(self.portfolio_file, 'w') as f: json.dump(data, f, indent=2, default=str)
+            # Atomic write: write to temp file then rename (prevents corruption on crash)
+            tmp_path = self.portfolio_file + '.tmp'
+            with open(tmp_path, 'w') as f: json.dump(data, f, indent=2, default=str)
+            os.replace(tmp_path, self.portfolio_file)
         except Exception as e: logger.error(f"Failed to save portfolio: {e}")
 
     def _load(self):
