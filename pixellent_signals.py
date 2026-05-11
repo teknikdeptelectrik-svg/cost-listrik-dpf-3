@@ -362,10 +362,14 @@ def compute_signals(df: pd.DataFrame,
     # ── StopPct per-bar [M1] ──
     stop_pct_arr = pd.Series(cfg['stop_pct'], index=c.index)
     stop_pct_arr[sideways_arr] = max(cfg['stop_pct'] - 0.5, 1.0)
-    sideways_last = sideways_arr.iloc[-1]
-    max_hold_used = (max(cfg['max_holding_bars'] - 5, 5)
-                     if sideways_last and cfg['max_holding_bars'] > 0
-                     else cfg['max_holding_bars'])
+
+    # [FIX-1] max_hold_used per-bar (bukan hanya dari bar terakhir)
+    # AFL: jika sideways saat BUY terjadi, kurangi holding period
+    max_hold_arr = pd.Series(cfg['max_holding_bars'], index=c.index)
+    if cfg['max_holding_bars'] > 0:
+        max_hold_arr[sideways_arr] = max(cfg['max_holding_bars'] - 5, 5)
+    # Scalar fallback for backward compat (last bar value for screen_all)
+    max_hold_used = int(max_hold_arr.iloc[-1])
 
     # ──────────────────────────────────────────
     # BUY CONDITIONS
@@ -438,31 +442,71 @@ def compute_signals(df: pd.DataFrame,
     stop_aktif    = pd.concat([hard_stop_p1, trail_stop_s], axis=1).max(axis=1)
     sell_manual_s = c < stop_aktif
 
-    # InPosition Pass1 — untuk SellTimeExit & BarsSince
+    # InPosition Pass1 — for trailing stop & regime exit
     in_pos_p1 = _in_position_from(buy_pass1_np, sell_raw_base.values, c.index)
 
-    # BarsSince & BelumProfit
-    bars_since = pd.Series(0, index=c.index)
-    buy_idx    = 0
-    for i in range(len(c)):
-        if buy_pass1_np[i]:
-            buy_idx = i
-        bars_since.iloc[i] = i - buy_idx
-
-    belum_profit   = c < buy_price_p1 * (1 + cfg['min_profit_pct'] / 100)
-    sell_time_exit = pd.Series(False, index=c.index)
-    if max_hold_used > 0:
-        sell_time_exit = (bars_since >= max_hold_used) & belum_profit & in_pos_p1
+    # [FIX-1] Lock max_hold at buy time (per-bar value when BUY fires)
+    max_hold_at_buy = _lock_at_buy(
+        buy_pass1_np,
+        lambda i: max_hold_arr.iloc[i],
+        c.index
+    )
 
     # [A1] SellRegimeExit — SETELAH InPosition terbentuk
     sell_regime_exit = high_vol_arr & in_pos_p1
 
     # ──────────────────────────────────────────
     # PASS 2 — ExRem(BuyRaw, SellRawFull)
+    # [FIX-2/3] sell_time_exit dihitung SETELAH Pass2 menggunakan buy_final
     # ──────────────────────────────────────────
+    # First pass without sell_time_exit
+    sell_raw_full_p2a = sell_raw_base | sell_manual_s | sell_regime_exit
+    buy_final_np  = _exrem(buy_raw_np, sell_raw_full_p2a.values)
+    buy_final     = pd.Series(buy_final_np, index=c.index)
+
+    # [FIX-3] BarsSince dari buy_final_np (bukan buy_pass1_np)
+    bars_since = pd.Series(0, index=c.index)
+    buy_idx    = 0
+    for i in range(len(c)):
+        if buy_final_np[i]:
+            buy_idx = i
+        bars_since.iloc[i] = i - buy_idx
+
+    # [FIX-1] Lock max_hold at buy time from buy_final
+    max_hold_at_buy_final = _lock_at_buy(
+        buy_final_np,
+        lambda i: max_hold_arr.iloc[i],
+        c.index
+    )
+
+    # Buy price final for belum_profit check
+    buy_price_final_tmp = _lock_at_buy(buy_final_np, lambda i: o.iloc[i], c.index)
+
+    # [FIX-2] InPosition final (preliminary, without time exit)
+    sell_final_p2a_np = _exrem(sell_raw_full_p2a.values, buy_raw_np)
+    in_pos_final_tmp = _in_position_from(buy_final_np, sell_final_p2a_np, c.index)
+
+    # [FIX-2] sell_time_exit menggunakan in_pos_final dan bars_since dari buy_final
+    belum_profit   = c < buy_price_final_tmp * (1 + cfg['min_profit_pct'] / 100)
+    sell_time_exit = pd.Series(False, index=c.index)
+    if cfg['max_holding_bars'] > 0:
+        sell_time_exit = ((bars_since >= max_hold_at_buy_final) &
+                          belum_profit & in_pos_final_tmp)
+
+    # Final sell_raw_full dengan sell_time_exit
     sell_raw_full = sell_raw_base | sell_manual_s | sell_time_exit | sell_regime_exit
+
+    # Re-run ExRem dengan sell_raw_full yang lengkap
     buy_final_np  = _exrem(buy_raw_np, sell_raw_full.values)
     buy_final     = pd.Series(buy_final_np, index=c.index)
+
+    # [FIX-3] Recalculate bars_since from definitive buy_final_np
+    bars_since = pd.Series(0, index=c.index)
+    buy_idx    = 0
+    for i in range(len(c)):
+        if buy_final_np[i]:
+            buy_idx = i
+        bars_since.iloc[i] = i - buy_idx
 
     # [A5] Sell ExRem — ExRem(SellRaw, BuyRaw)
     sell_final_np = _exrem(sell_raw_full.values, buy_raw_np)
