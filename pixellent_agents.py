@@ -411,7 +411,8 @@ class SmartMoneyAgent(BaseAgent):
 
         # --- Bid/Offer Ratio (weight: 15%) ---
         bo_ratio = self._safe_get(data, "bid_offer_ratio", 1.0)
-        bo_score = np.clip((bo_ratio - 0.5) * 100 / 1.5, 0, 100)
+        # Center at 1.0 (neutral): bo_ratio=1.0→50, 1.5→75, 0.5→25
+        bo_score = np.clip((bo_ratio - 1.0) * 50 + 50, 0, 100)
         factors["bid_offer_score"] = round(bo_score, 1)
 
         if bo_ratio >= 1.5:
@@ -572,8 +573,8 @@ class RiskAgent(BaseAgent):
 
         # --- Risk/Reward Ratio (weight: 15%) ---
         rr_ratio = self._safe_get(data, "rr_ratio", 1.0)
-        # R/R > 2 is good, > 3 is excellent
-        rr_score = np.clip(rr_ratio * 25, 10, 95)
+        # R/R = 1 is neutral (50), > 2 is good (75), > 3 is excellent (100)
+        rr_score = np.clip(50 + (rr_ratio - 1) * 25, 10, 95)
         factors["rr_score"] = round(rr_score, 1)
 
         if rr_ratio >= 3.0:
@@ -656,7 +657,7 @@ class MacroAgent(BaseAgent):
     """
     Evaluates macroeconomic favorability for a stock/sector.
 
-    Inputs: macro_score, sector_bias, sentiment_score, global_correlation
+    Inputs: macro_score, sector_bias, sentiment_score, bi_rate, inflation, fx
     Output: Macro favorability (0-100), sector_recommendation
     Logic: Combines macro + sentiment + sector sensitivity
     """
@@ -888,11 +889,16 @@ class MasterDecisionAgent:
                 composite_score = min(composite_score, 50)
 
         # SmartMoney divergence is already detected in _detect_conflicts()
-        # as TREND_SM_GAP. Apply score penalty if that conflict exists.
+        # as TREND_SM_GAP. Apply symmetric score penalty:
+        # - SM distributing (score<30) while trend bullish → reduce composite
+        # - SM accumulating (score>70) while trend weak → boost composite
         if any("TREND_SM_GAP" in c for c in conflicts):
             sm_output = agent_outputs.get("SmartMoneyAgent")
-            if sm_output and sm_output.score < 30:
-                composite_score -= 8  # Penalize when SM is actively distributing
+            if sm_output:
+                if sm_output.score < 30:
+                    composite_score -= 8  # SM distributing despite bullish trend
+                elif sm_output.score > 70 and trend_output and trend_output.score < 40:
+                    composite_score += 5  # SM accumulating = early signal, slight boost
 
         composite_score = np.clip(composite_score, 0, 100)
 
