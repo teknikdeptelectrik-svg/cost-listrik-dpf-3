@@ -421,21 +421,27 @@ def compute_signals(df: pd.DataFrame,
     trail_high_s = pd.Series(trail_high, index=c.index)
     trail_stop_s = trail_high_s - trail_mult * atr14s
 
-    # HardStop & Target & BuyPrice dikunci saat Buy_Pass1
+    # HardStop & Target & BuyPrice dikunci saat Buy_Pass1 (pre-compute arrays)
+    _open_arr = o.values
+    _stop_pct_arr_vals = stop_pct_arr.values
+    _atr14s_vals = atr14s.values
+    _gap_buf = cfg['gap_buffer_pct']
+    _tgt_mult = cfg['target_atr_mult']
+
     hard_stop_p1 = _lock_at_buy(
         buy_pass1_np,
-        lambda i: o.iloc[i] * (1 - (stop_pct_arr.iloc[i] + cfg['gap_buffer_pct']) / 100),
+        lambda i: _open_arr[i] * (1 - (_stop_pct_arr_vals[i] + _gap_buf) / 100),
         c.index
     )
     target_p1 = _lock_at_buy(
         buy_pass1_np,
-        lambda i: max(o.iloc[i] + cfg['target_atr_mult'] * atr14s.iloc[i],
-                      o.iloc[i] * 1.05),
+        lambda i: max(_open_arr[i] + _tgt_mult * _atr14s_vals[i],
+                      _open_arr[i] * 1.05),
         c.index
     )
     buy_price_p1 = _lock_at_buy(
         buy_pass1_np,
-        lambda i: o.iloc[i],
+        lambda i: _open_arr[i],
         c.index
     )
 
@@ -480,7 +486,7 @@ def compute_signals(df: pd.DataFrame,
     )
 
     # Buy price final for belum_profit check
-    buy_price_final_tmp = _lock_at_buy(buy_final_np, lambda i: o.iloc[i], c.index)
+    buy_price_final_tmp = _lock_at_buy(buy_final_np, lambda i: _open_arr[i], c.index)
 
     # [FIX-2] InPosition final (preliminary, without time exit)
     sell_final_p2a_np = _exrem(sell_raw_full_p2a.values, buy_raw_np)
@@ -515,19 +521,19 @@ def compute_signals(df: pd.DataFrame,
     # [A2] InPosition FINAL dari Buy_Final & Sell_Final
     in_pos_final = _in_position_from(buy_final_np, sell_final_np, c.index)
 
-    # [A3] HardStop & Target FINAL dari Buy_Final
+    # [A3] HardStop & Target FINAL dari Buy_Final (reuse pre-computed arrays)
     hard_stop_final = _lock_at_buy(
         buy_final_np,
-        lambda i: o.iloc[i] * (1 - (stop_pct_arr.iloc[i] + cfg['gap_buffer_pct']) / 100),
+        lambda i: _open_arr[i] * (1 - (_stop_pct_arr_vals[i] + _gap_buf) / 100),
         c.index
     )
     target_final = _lock_at_buy(
         buy_final_np,
-        lambda i: max(o.iloc[i] + cfg['target_atr_mult'] * atr14s.iloc[i],
-                      o.iloc[i] * 1.05),
+        lambda i: max(_open_arr[i] + _tgt_mult * _atr14s_vals[i],
+                      _open_arr[i] * 1.05),
         c.index
     )
-    buy_price_final = _lock_at_buy(buy_final_np, lambda i: o.iloc[i], c.index)
+    buy_price_final = _lock_at_buy(buy_final_np, lambda i: _open_arr[i], c.index)
 
     # [A2] FloatPct dari InPosition Final
     float_pct = ((c / buy_price_final.replace(0, np.nan) - 1) * 100
@@ -573,7 +579,8 @@ def compute_signals(df: pd.DataFrame,
         'in_position_p1': in_pos_p1,      # debug Pass1
         'trailing_high': trail_high_s, 'trailing_stop': trail_stop_s,
         'stop_aktif': stop_aktif,
-        'hard_stop_p1': hard_stop_p1, 'target_p1': target_p1, 'buy_price_p1': buy_price_p1,
+        'hard_stop_p1': hard_stop_p1, 'target_p1': target_p1, 'buy_price_p1': buy_price_p1,  # Pass1 debug only
+
         'hard_stop_final': hard_stop_final,  # [A3]
         'target_final': target_final,        # [A3]
         'buy_price_final': buy_price_final,  # [A3]
