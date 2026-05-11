@@ -35,6 +35,7 @@ import numpy as np
 import json
 import os
 import logging
+import tempfile
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
@@ -258,14 +259,28 @@ class TrendAgent(BaseAgent):
 
         # --- ADX strength (weight: 10%) ---
         adx = self._safe_get(data, "adx", 20.0)
-        # ADX > 25 = trending, > 40 = strong trend
-        adx_score = np.clip(adx * 2, 0, 100)
+        # ADX measures trend STRENGTH only, not direction.
+        # Combine with direction signals (ema_status + hma_slope) to produce
+        # a directional ADX score: strong trend in bullish direction = high,
+        # strong trend in bearish direction = low, no trend = neutral (50).
+        adx_strength = np.clip(adx / 50.0, 0.0, 1.0)  # 0..1, peaks at ADX=50
+
+        # Determine direction from ema_score and hma_score (already computed above)
+        # ema_score & hma_score are 0-100, where >50 = bullish, <50 = bearish
+        direction_bias = ((ema_score + hma_score) / 2.0 - 50.0) / 50.0  # -1..+1
+
+        # ADX score: 50 (neutral) + direction * strength * 50
+        # Strong ADX + bullish direction → high score (up to 100)
+        # Strong ADX + bearish direction → low score (down to 0)
+        # Weak ADX (no trend) → stays near 50 regardless of direction
+        adx_score = 50.0 + direction_bias * adx_strength * 50.0
+        adx_score = np.clip(adx_score, 0, 100)
         factors["adx_score"] = round(adx_score, 1)
 
         if adx >= 40:
-            reasoning_parts.append(f"ADX={adx:.0f}, very strong trend")
+            reasoning_parts.append(f"ADX={adx:.0f}, very strong trend ({('bullish' if direction_bias > 0 else 'bearish')})")
         elif adx >= 25:
-            reasoning_parts.append(f"ADX={adx:.0f}, confirmed trend")
+            reasoning_parts.append(f"ADX={adx:.0f}, confirmed trend ({('bullish' if direction_bias > 0 else 'bearish')})")
         else:
             reasoning_parts.append(f"ADX={adx:.0f}, weak/no trend")
 
@@ -825,15 +840,13 @@ class MasterDecisionAgent:
             )
 
         # --- Determine weights ---
+        # Use provided agent_weights (from orchestrator's configured weights).
+        # If not provided, fall back to equal weights.
+        # NOTE: We do NOT use confidence as weight — confidence modulates the
+        # final action threshold, not the aggregation weights.
         if agent_weights is None:
-            agent_weights = {name: out.confidence for name, out in agent_outputs.items()}
-            # Normalize
-            total_w = sum(agent_weights.values())
-            if total_w > 0:
-                agent_weights = {k: v / total_w for k, v in agent_weights.items()}
-            else:
-                n = len(agent_outputs)
-                agent_weights = {k: 1.0 / n for k in agent_outputs}
+            n = len(agent_outputs)
+            agent_weights = {k: 1.0 / n for k in agent_outputs}
 
         # --- Compute weighted score ---
         weighted_score = 0.0
@@ -877,15 +890,12 @@ class MasterDecisionAgent:
             if risk_label == "EXTREME":
                 composite_score = min(composite_score, 50)
 
-        # If SmartMoney shows strong distribution but Trend is bullish (divergence)
-        sm_output = agent_outputs.get("SmartMoneyAgent")
-        if sm_output and trend_output:
-            if sm_output.score < 30 and trend_output.score > 65:
-                # Smart money divergence — reduce score
-                composite_score -= 8
-                conflicts.append(
-                    "SM_DIVERGENCE: Smart money distributing despite bullish trend"
-                )
+        # SmartMoney divergence is already detected in _detect_conflicts()
+        # as TREND_SM_GAP. Apply score penalty if that conflict exists.
+        if any("TREND_SM_GAP" in c for c in conflicts):
+            sm_output = agent_outputs.get("SmartMoneyAgent")
+            if sm_output and sm_output.score < 30:
+                composite_score -= 8  # Penalize when SM is actively distributing
 
         composite_score = np.clip(composite_score, 0, 100)
 
@@ -1379,12 +1389,16 @@ class AdaptiveLearning:
             logger.info("Insufficient data for weight adjustment. Keeping defaults.")
             return {a.name: a.weight for a in orchestrator.agents}
 
-        # Compute new weights proportional to accuracy, with floor
+        # Compute new weights proportional to accuracy, with floor.
+        # Agents above 0.5 accuracy get boosted, below 0.5 get penalized,
+        # but never below MIN_WEIGHT.
         MIN_WEIGHT = 0.10
         raw_weights = {}
         for name, acc in accuracies.items():
-            # Boost accuracy above 0.5, penalize below
-            raw_weights[name] = max(acc, MIN_WEIGHT)
+            # Transform: acc=0.5 → MIN_WEIGHT, acc=1.0 → 1.0
+            # Linear scale from baseline 0.5 upward, floor at MIN_WEIGHT
+            adjusted = MIN_WEIGHT + (acc - 0.5) * (1.0 - MIN_WEIGHT) / 0.5
+            raw_weights[name] = max(adjusted, MIN_WEIGHT)
 
         # Normalize to sum = 1.0
         total = sum(raw_weights.values())
@@ -1720,7 +1734,6 @@ if __name__ == "__main__":
     print("─" * 70)
 
     # Use a temp path for testing (avoid polluting data/)
-    import tempfile
     temp_log = os.path.join(tempfile.gettempdir(), "pixellent_test_decisions.json")
     learner = AdaptiveLearning(log_path=temp_log)
 
