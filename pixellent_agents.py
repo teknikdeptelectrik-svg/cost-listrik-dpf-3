@@ -37,7 +37,7 @@ import os
 import logging
 import tempfile
 from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -400,7 +400,8 @@ class SmartMoneyAgent(BaseAgent):
         # --- Volume Power (weight: 20%) ---
         vpower = self._safe_get(data, "vpower", 1.0)
         # vpower > 1 = more buying volume, < 1 = more selling volume
-        vpower_score = np.clip((vpower - 0.5) * 100, 0, 100)
+        # Center at 1.0 (neutral), range 0.5–1.5 maps to 25–75
+        vpower_score = np.clip((vpower - 1.0) * 50 + 50, 0, 100)
         factors["vpower_score"] = round(vpower_score, 1)
 
         if vpower >= 1.5:
@@ -725,7 +726,6 @@ class MacroAgent(BaseAgent):
             reasoning_parts.append(f"Sentiment negative ({sentiment_score:.0f}/100)")
 
         # --- Global Correlation & Risk (weight: 20%) ---
-        global_corr = self._safe_get(data, "global_correlation", 0.5)
         bi_direction = self._safe_get(data, "bi_rate_direction", "hold")
         inflation_level = self._safe_get(data, "inflation_level", "moderate")
         fx_stability = self._safe_get(data, "fx_stability", "stable")
@@ -882,12 +882,9 @@ class MasterDecisionAgent:
 
         if risk_output and trend_output:
             risk_label = risk_output.factors.get("risk_label", "MEDIUM")
-            if risk_label == "EXTREME" and trend_output.score > 60:
-                # Risk override: cap the bullish signal
-                composite_score = min(composite_score, 55)
-                conflicts.append("RISK_OVERRIDE: Extreme risk caps bullish trend signal")
-
             if risk_label == "EXTREME":
+                if trend_output.score > 60:
+                    conflicts.append("RISK_OVERRIDE: Extreme risk caps bullish trend signal")
                 composite_score = min(composite_score, 50)
 
         # SmartMoney divergence is already detected in _detect_conflicts()
