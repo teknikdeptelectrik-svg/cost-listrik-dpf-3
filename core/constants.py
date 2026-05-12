@@ -45,19 +45,22 @@ SM_DIVERGENCE_SM_THRESHOLD = 30
 SM_DIVERGENCE_TREND_THRESHOLD = 65
 
 # Position size modifiers from RiskAgent
+# Keys match risk_label output from RiskAgent.analyze()
 POSITION_SIZE_MODIFIERS = {
-    "LOW_RISK": 1.3,
-    "MEDIUM_RISK": 1.0,
-    "ELEVATED_RISK": 0.7,
-    "HIGH_RISK": 0.4,
-    "EXTREME_RISK": 0.2,
+    "LOW": 1.3,        # score >= 75 — safe to increase position
+    "MEDIUM": 1.0,     # score >= 60 — normal sizing
+    "HIGH": 0.7,       # score >= 45 — reduce position
+    "VERY_HIGH": 0.4,  # score >= 30 — significantly reduce
+    "EXTREME": 0.2,    # score < 30  — minimal exposure only
 }
 
-# Risk level score boundaries
+# Risk level score boundaries (aligned with position_mod thresholds)
 RISK_LEVEL_THRESHOLDS = {
-    "LOW": 70,
-    "MEDIUM": 50,
-    "HIGH": 30,
+    "LOW": 75,
+    "MEDIUM": 60,
+    "HIGH": 45,
+    "VERY_HIGH": 30,
+    # Below 30 = EXTREME
 }
 
 # =============================================================================
