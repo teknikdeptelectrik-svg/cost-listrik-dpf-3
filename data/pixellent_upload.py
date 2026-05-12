@@ -21,12 +21,14 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from sqlalchemy import text as sa_text
 
-from pixellent_data_ingestion import (
+# [FIX #2] Correct import paths after folder reorganization
+# [FIX #1] Use get_db_engine from db_loader only (stricter credential validation)
+from data.pixellent_data_ingestion import (
     parse_idx_excel, ingest_file, ingest_batch,
     validate_file_quick, get_upload_history, get_available_dates,
-    get_db_engine,
 )
-from pixellent_db_loader import (
+from data.pixellent_db_loader import (
+    get_db_engine,
     get_data_stats, get_available_tickers,
     get_data_date_range, get_market_foreign_flow,
 )

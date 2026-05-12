@@ -35,7 +35,7 @@ from sqlalchemy.engine import Engine
 # ============================================================================
 # LOGGING
 # ============================================================================
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+# [FIX #5] Removed logging.basicConfig() — let application configure root logger
 logger = logging.getLogger(__name__)
 
 
@@ -371,9 +371,16 @@ def get_db_engine(
     """Create SQLAlchemy engine for PostgreSQL. Uses env vars as defaults."""
     host = host or os.environ.get('PIXELLENT_DB_HOST', 'localhost')
     port = port or int(os.environ.get('PIXELLENT_DB_PORT', '5432'))
-    dbname = dbname or os.environ.get('PIXELLENT_DB_NAME', 'pixellent_db')
-    user = user or os.environ.get('PIXELLENT_DB_USER', 'pixellent')
-    password = password or os.environ.get('PIXELLENT_DB_PASSWORD', 'pixellent')
+    # [FIX #4] No hardcoded defaults for credentials — raise error if missing
+    dbname = dbname or os.environ.get('PIXELLENT_DB_NAME', '')
+    user = user or os.environ.get('PIXELLENT_DB_USER', '')
+    password = password or os.environ.get('PIXELLENT_DB_PASSWORD', '')
+
+    if not dbname or not user:
+        raise ValueError(
+            "Database credentials not provided. Set PIXELLENT_DB_NAME and "
+            "PIXELLENT_DB_USER environment variables, or pass them explicitly."
+        )
     url = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
     return create_engine(url, pool_size=5, max_overflow=10)
 

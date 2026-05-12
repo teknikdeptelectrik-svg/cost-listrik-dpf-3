@@ -555,7 +555,8 @@ def screen_all_db(
     Note: Currently loads each ticker individually (N queries). For large
     universes (500+), consider batch-loading approach for better performance.
     """
-    from pixellent_signals import compute_signals, DEFAULT_CONFIG, _generate_remarks
+    # [FIX #3] Correct import path (kept inside function to avoid circular import)
+    from core.pixellent_signals import compute_signals, DEFAULT_CONFIG, _generate_remarks
 
     cfg = {**DEFAULT_CONFIG, **(config or {})}
 
