@@ -254,6 +254,10 @@ def get_agent_decisions(tickers: List[str]) -> pd.DataFrame:
                             "Decision": md.action,
                             "Confidence": md.confidence * 100,
                             "Conflict": len(md.conflicts) > 0,
+                            "Conflicts_List": md.conflicts,
+                            "Risk_Level": md.risk_level,
+                            "Position_Size": md.position_size_modifier,
+                            "Data_Quality": md.data_quality * 100,
                             "Reasoning": md.reasoning,
                         })
                 except Exception as e:
@@ -765,6 +769,37 @@ def _mock_agent_decisions(tickers: List[str]) -> pd.DataFrame:
         conflict = abs(trend_s - risk_s) > 25 or abs(sm_s - macro_s) > 30
         confidence = min(weighted_score / 100 * 1.1, 0.98) * 100
 
+        # Derive conflicts list
+        conflicts_list = []
+        if abs(trend_s - risk_s) > 25:
+            conflicts_list.append(f"TREND_RISK_GAP: Trend={trend_s} vs Risk={risk_s}")
+        if abs(sm_s - macro_s) > 30:
+            conflicts_list.append(f"SM_MACRO_GAP: SmartMoney={sm_s} vs Macro={macro_s}")
+
+        # Risk level from risk score
+        if risk_s >= 75:
+            risk_level = "LOW"
+        elif risk_s >= 60:
+            risk_level = "MEDIUM"
+        elif risk_s >= 45:
+            risk_level = "HIGH"
+        elif risk_s >= 30:
+            risk_level = "VERY_HIGH"
+        else:
+            risk_level = "EXTREME"
+
+        # Position size from risk score
+        if risk_s >= 75:
+            pos_size = 1.3
+        elif risk_s >= 60:
+            pos_size = 1.0
+        elif risk_s >= 45:
+            pos_size = 0.7
+        elif risk_s >= 30:
+            pos_size = 0.4
+        else:
+            pos_size = 0.2
+
         template_idx = i % len(reasoning_templates)
 
         decisions.append({
@@ -776,6 +811,10 @@ def _mock_agent_decisions(tickers: List[str]) -> pd.DataFrame:
             "Decision": decision,
             "Confidence": round(confidence, 1),
             "Conflict": conflict,
+            "Conflicts_List": conflicts_list,
+            "Risk_Level": risk_level,
+            "Position_Size": pos_size,
+            "Data_Quality": 85.0,  # Mock assumes adequate data
             "Reasoning": reasoning_templates[template_idx],
         })
 

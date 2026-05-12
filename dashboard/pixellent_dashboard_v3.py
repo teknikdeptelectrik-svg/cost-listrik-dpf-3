@@ -540,7 +540,7 @@ with tab4:
 with tab5:
     st.markdown("## 🤖 Multi-Agent Decision Panel")
     st.markdown("Each stock is evaluated by 4 specialized AI agents using **weighted ensemble** scoring (not simple average).")
-    st.markdown("Weights: Trend=30%, SmartMoney=25%, Risk=25%, Macro=20%")
+    st.markdown("Weights: Trend=30%, SmartMoney=25%, Risk=25%, Macro=20% *(adaptive — auto-adjusted based on historical accuracy)*")
 
     # Get agent decisions from orchestrator
     available_tickers = screening_df["Ticker"].tolist() if not screening_df.empty else ["BBCA", "BMRI", "ICBP", "TLKM", "INDF"]
@@ -590,6 +590,29 @@ with tab5:
                 </div>
                 """, unsafe_allow_html=True)
 
+            # Data Quality + Position Size badges row
+            dq_col, ps_col, rl_col = st.columns(3)
+            with dq_col:
+                quality = row.get("Data_Quality", 100)
+                if quality < 40:
+                    q_badge = f'<span class="badge-red">⚠️ Data: {quality:.0f}%</span>'
+                elif quality < 70:
+                    q_badge = f'<span class="badge-yellow">⚠️ Data: {quality:.0f}%</span>'
+                else:
+                    q_badge = f'<span class="badge-green">✓ Data: {quality:.0f}%</span>'
+                st.markdown(q_badge, unsafe_allow_html=True)
+
+            with ps_col:
+                pos_size = row.get("Position_Size", 1.0)
+                ps_color = "#00c853" if pos_size >= 1.0 else "#ffc107" if pos_size >= 0.7 else "#f44336"
+                st.markdown(f'<span style="color: {ps_color}; font-weight: bold;">Position: x{pos_size:.1f}</span>', unsafe_allow_html=True)
+
+            with rl_col:
+                risk_lvl = row.get("Risk_Level", "MEDIUM")
+                rl_colors = {"LOW": "#00c853", "MEDIUM": "#ffc107", "HIGH": "#ff9800", "VERY_HIGH": "#f44336", "EXTREME": "#d50000"}
+                rl_color = rl_colors.get(risk_lvl, "#ffc107")
+                st.markdown(f'<span style="color: {rl_color}; font-weight: bold;">Risk: {risk_lvl}</span>', unsafe_allow_html=True)
+
             # Agent scores bar chart
             agent_chart_col, info_col = st.columns([3, 2])
 
@@ -611,13 +634,18 @@ with tab5:
                 st.plotly_chart(fig_agents, use_container_width=True)
 
             with info_col:
-                if row["Conflict"]:
-                    st.markdown("""
+                # Conflict details (full list, not just boolean)
+                conflicts_list = row.get("Conflicts_List", [])
+                if isinstance(conflicts_list, str):
+                    conflicts_list = []
+                if len(conflicts_list) > 0:
+                    conflict_text = "<br>".join([f"• {c}" for c in conflicts_list[:3]])
+                    st.markdown(f"""
                     <div style="background: rgba(244,67,54,0.1); border: 1px solid rgba(244,67,54,0.3);
                                 border-radius: 8px; padding: 10px; margin-bottom: 10px;">
-                        <span class="badge-red">⚡ CONFLICT DETECTED</span>
-                        <p style="margin: 5px 0 0 0; font-size: 0.85rem; color: rgba(200,200,220,0.7);">
-                            Agents disagree significantly. Review reasoning carefully.
+                        <span class="badge-red">⚡ {len(conflicts_list)} CONFLICT{'S' if len(conflicts_list) > 1 else ''}</span>
+                        <p style="margin: 5px 0 0 0; font-size: 0.82rem; color: rgba(200,200,220,0.7);">
+                            {conflict_text}
                         </p>
                     </div>
                     """, unsafe_allow_html=True)

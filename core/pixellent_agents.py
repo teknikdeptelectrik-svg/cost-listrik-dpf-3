@@ -586,25 +586,29 @@ class RiskAgent(BaseAgent):
         score = np.clip(score, 0, 100)
 
         # --- Position Size Modifier ---
+        # Aligned with POSITION_SIZE_MODIFIERS in core/constants.py
         if score >= 75:
-            position_mod = 1.3  # Can increase position
+            position_mod = 1.3  # LOW risk — can increase position
         elif score >= 60:
-            position_mod = 1.0  # Normal sizing
+            position_mod = 1.0  # MEDIUM risk — normal sizing
         elif score >= 45:
-            position_mod = 0.7  # Reduce position
+            position_mod = 0.7  # HIGH risk — reduce position
         elif score >= 30:
-            position_mod = 0.4  # Significantly reduce
+            position_mod = 0.4  # VERY_HIGH risk — significantly reduce
         else:
-            position_mod = 0.2  # Minimal exposure
+            position_mod = 0.2  # EXTREME risk — minimal exposure
         factors["position_size_modifier"] = round(position_mod, 2)
 
         # --- Risk Level Label ---
-        if score >= 70:
+        # Thresholds aligned with position_mod breakpoints above
+        if score >= 75:
             risk_label = "LOW"
-        elif score >= 50:
+        elif score >= 60:
             risk_label = "MEDIUM"
-        elif score >= 30:
+        elif score >= 45:
             risk_label = "HIGH"
+        elif score >= 30:
+            risk_label = "VERY_HIGH"
         else:
             risk_label = "EXTREME"
         factors["risk_label"] = risk_label
@@ -1041,7 +1045,8 @@ class AgentOrchestrator:
                                            macro_data, sentiment_data)
     """
 
-    def __init__(self, custom_weights: Optional[Dict[str, float]] = None):
+    def __init__(self, custom_weights: Optional[Dict[str, float]] = None,
+                 apply_adaptive: bool = True):
         """
         Initialize orchestrator with default or custom agent weights.
 
@@ -1049,6 +1054,8 @@ class AgentOrchestrator:
             custom_weights: Dict of agent_name -> weight (0-1).
                            Default: TrendAgent=0.30, SmartMoney=0.25,
                            Risk=0.25, Macro=0.20
+            apply_adaptive: If True, load AdaptiveLearning and apply
+                           previously computed dynamic weights on startup.
         """
         self.trend_agent = TrendAgent(weight=0.30)
         self.smart_money_agent = SmartMoneyAgent(weight=0.25)
@@ -1069,6 +1076,12 @@ class AgentOrchestrator:
             self.risk_agent,
             self.macro_agent,
         ]
+
+        # --- Adaptive Learning Integration ---
+        # Loads historical decision log and applies dynamic weights if available
+        self.learner = AdaptiveLearning(auto_retrain=True)
+        if apply_adaptive:
+            self.learner.apply_dynamic_weights(self)
 
     def _get_agent_by_name(self, name: str) -> Optional[BaseAgent]:
         """Get agent instance by name."""
@@ -1102,6 +1115,9 @@ class AgentOrchestrator:
             FullAnalysis with all agent outputs + master decision
         """
         analysis = FullAnalysis(ticker=ticker)
+
+        # --- Check if adaptive weight retrain is needed ---
+        self.learner.retrain_if_needed(self)
 
         data_quality = self._assess_data_quality(signal_data, extended_data, macro_data)
         if data_quality < 0.4:
