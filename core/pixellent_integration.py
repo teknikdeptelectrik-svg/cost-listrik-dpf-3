@@ -27,16 +27,17 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.engine import Engine
 
-from pixellent_signals import compute_signals, DEFAULT_CONFIG, _generate_remarks
-from pixellent_db_loader import (
+# [FIX #1] Correct import paths after folder reorganization
+from core.pixellent_signals import compute_signals, DEFAULT_CONFIG, _generate_remarks
+from data.pixellent_db_loader import (
     load_stock_db, load_ihsg_db, load_stock_extended,
     load_all_stocks_latest, get_db_engine,
 )
-from pixellent_smartmoney import smart_money_score
-from pixellent_foreignflow import (
+from modules.pixellent_smartmoney import smart_money_score
+from modules.pixellent_foreignflow import (
     analyze_stock_foreign_flow, compute_foreign_flow_features, get_sector,
 )
-from pixellent_regime_enhanced import (
+from modules.pixellent_regime_enhanced import (
     detect_regime_enhanced, get_regime_for_signals, get_regime_summary,
 )
 

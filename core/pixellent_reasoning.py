@@ -51,7 +51,7 @@ except ImportError:
 TEMPLATES_EN = {
     "trend_bullish_strong": (
         "Strong bullish trend confirmed. EMA stacking is positive with "
-        "EMA10 > EMA21 > EMA50, trend age {trend_age} bars. "
+        "EMA8 > EMA21 > EMA55, trend age {trend_age} bars. "
         "HMA slope is rising at {hma_slope:.4f}, indicating momentum acceleration."
     ),
     "trend_bullish_moderate": (
@@ -59,7 +59,7 @@ TEMPLATES_EN = {
         "trend age {trend_age} bars. Price is above HMA with gradual slope."
     ),
     "trend_bearish": (
-        "Bearish trend detected. EMA stacking is negative (EMA10 < EMA21 < EMA50), "
+        "Bearish trend detected. EMA stacking is negative (EMA8 < EMA21 < EMA55), "
         "trend age {trend_age} bars. HMA slope is declining at {hma_slope:.4f}."
     ),
     "trend_neutral": (
@@ -129,7 +129,7 @@ TEMPLATES_EN = {
 TEMPLATES_ID = {
     "trend_bullish_strong": (
         "Tren bullish kuat terkonfirmasi. EMA stacking positif dengan "
-        "EMA10 > EMA21 > EMA50, usia tren {trend_age} bar. "
+        "EMA8 > EMA21 > EMA55, usia tren {trend_age} bar. "
         "Slope HMA naik di {hma_slope:.4f}, menandakan akselerasi momentum."
     ),
     "trend_bullish_moderate": (
@@ -137,7 +137,7 @@ TEMPLATES_ID = {
         "usia tren {trend_age} bar. Harga di atas HMA dengan slope gradual."
     ),
     "trend_bearish": (
-        "Tren bearish terdeteksi. EMA stacking negatif (EMA10 < EMA21 < EMA50), "
+        "Tren bearish terdeteksi. EMA stacking negatif (EMA8 < EMA21 < EMA55), "
         "usia tren {trend_age} bar. Slope HMA menurun di {hma_slope:.4f}."
     ),
     "trend_neutral": (

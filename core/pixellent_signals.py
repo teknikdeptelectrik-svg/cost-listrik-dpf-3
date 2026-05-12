@@ -15,10 +15,14 @@ CHANGELOG v3.0 → v3.1 (7 Fix dari Audit Resmi):
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import logging
 import warnings
 warnings.filterwarnings('ignore')
 
-from pixellent_indicators import (
+logger = logging.getLogger(__name__)
+
+# [FIX #2] Correct import path after folder reorganization
+from modules.pixellent_indicators import (
     atr, hma, awesome_oscillator, accelerator_oscillator,
     heiken_ashi, vpower, vpower_color, ema_stack, trend_age,
     action_zone, rrg, up_fractal, down_fractal, tick_size
@@ -617,7 +621,7 @@ def screen_all(tickers=None, config=None, start='2020-01-01') -> pd.DataFrame:
     cfg     = {**DEFAULT_CONFIG, **(config or {})}
     ihsg_df = load_ihsg(start)   # [A7] DataFrame dengan H/L
     results = []
-    print(f"Screening {len(tickers)} saham...")
+    logger.info(f"Screening {len(tickers)} saham...")
 
     for ticker in tickers:
         try:
@@ -681,7 +685,7 @@ def screen_all(tickers=None, config=None, start='2020-01-01') -> pd.DataFrame:
                 'Likuid':   last['likuid'],
             })
         except Exception as e:
-            print(f"  Skip {ticker}: {e}")
+            logger.warning(f"  Skip {ticker}: {e}")
 
     if not results:
         return pd.DataFrame()

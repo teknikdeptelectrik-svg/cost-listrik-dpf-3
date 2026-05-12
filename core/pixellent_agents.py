@@ -1231,12 +1231,13 @@ class AdaptiveLearning:
         - Decay factor: recent decisions weighted 2x more than older ones.
     """
 
-    DEFAULT_LOG_PATH = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "data", "agent_decisions.json"
+    # [FIX #4] Use dedicated logs directory instead of code folder
+    _DATA_DIR = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "data", "logs"
     )
-    WEIGHTS_PATH = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "data", "agent_weights.json"
-    )
+
+    DEFAULT_LOG_PATH = os.path.join(_DATA_DIR, "agent_decisions.json")
+    WEIGHTS_PATH = os.path.join(_DATA_DIR, "agent_weights.json")
 
     # Auto-retrain configuration
     RETRAIN_THRESHOLD = 20       # Retrain after this many new outcomes
