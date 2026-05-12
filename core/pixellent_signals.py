@@ -547,6 +547,56 @@ def compute_signals(df: pd.DataFrame,
     rolling_max_20 = c.rolling(20, min_periods=1).max()
     drawdown_20d = ((c - rolling_max_20) / rolling_max_20.replace(0, np.nan) * 100).fillna(0)
 
+    # ── [Enrich] Agent Feature Bridge — kolom tambahan untuk AgentOrchestrator ──
+    # HMA slope: % change 5-bar (untuk TrendAgent)
+    hma5_slope = (hma5 - hma5.shift(5)) / hma5.shift(5).replace(0, np.nan) * 100
+    hma5_slope = hma5_slope.fillna(0.0)
+
+    # EMA distance dari close (untuk TrendAgent price_vs_ema*)
+    close_ma8_dist  = ((c - ma8)  / ma8.replace(0, np.nan)  * 100).fillna(0.0)
+    close_ma21_dist = ((c - ma21) / ma21.replace(0, np.nan) * 100).fillna(0.0)
+    close_ma55_dist = ((c - ma55) / ma55.replace(0, np.nan) * 100).fillna(0.0)
+
+    # ADX manual (Wilder's) — untuk TrendAgent
+    tr = pd.concat([
+        h - l,
+        (h - c.shift(1)).abs(),
+        (l - c.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    dm_plus  = (h - h.shift(1)).clip(lower=0)
+    dm_minus = (l.shift(1) - l).clip(lower=0)
+    dm_plus  = dm_plus.where(dm_plus > dm_minus, 0)
+    dm_minus = dm_minus.where(dm_minus > dm_plus, 0)
+    atr14_adx   = tr.ewm(alpha=1/14, adjust=False).mean()
+    di_plus     = 100 * dm_plus.ewm(alpha=1/14, adjust=False).mean() / atr14_adx.replace(0, np.nan)
+    di_minus    = 100 * dm_minus.ewm(alpha=1/14, adjust=False).mean() / atr14_adx.replace(0, np.nan)
+    dx          = (100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)).fillna(0)
+    adx_series  = dx.ewm(alpha=1/14, adjust=False).mean().fillna(20.0)
+
+    # Volatilitas 20-hari annualized (untuk RiskAgent)
+    volatility_20d = (c.pct_change().rolling(20).std() * np.sqrt(252) * 100).fillna(25.0)
+
+    # Days in regime — berapa bar regime terakhir bertahan (untuk RiskAgent)
+    regime_series = regime_df['regime']
+    days_in_regime = pd.Series(0, index=c.index)
+    count = 0
+    prev_regime = None
+    for i, (idx, reg) in enumerate(regime_series.items()):
+        if reg == prev_regime:
+            count += 1
+        else:
+            count = 1
+            prev_regime = reg
+        days_in_regime.iloc[i] = count
+
+    # MA cross signal (golden/death cross) — untuk TrendAgent
+    ma_cross_signal = pd.Series(0, index=c.index)
+    ma8_above_ma21 = ma8 > ma21
+    golden_cross = ma8_above_ma21 & ~ma8_above_ma21.shift(1).fillna(False)
+    death_cross  = ~ma8_above_ma21 & ma8_above_ma21.shift(1).fillna(True)
+    ma_cross_signal[golden_cross] = 1
+    ma_cross_signal[death_cross]  = -1
+
     # [Ali Fix] Flag IHSG H/L real untuk warning di dashboard
     ihsg_hl_real = bool(regime_df.get('ihsg_hl_real', pd.Series(False)).iloc[-1])                    if 'ihsg_hl_real' in regime_df.columns else False
 
@@ -602,6 +652,16 @@ def compute_signals(df: pd.DataFrame,
         'rrg_strong': rrg_df['strong'],
         'score': score, 'rsi': rsi_s,
         'ihsg_hl_real': ihsg_hl_real,   # [Ali Fix] True=H/L asli, False=proxy
+        # ── Agent Feature Bridge (enrich_features) ──
+        'hma5_slope':      hma5_slope,      # % slope HMA5 (TrendAgent)
+        'close_ma8_dist':  close_ma8_dist,  # % jarak close ke EMA8 (TrendAgent)
+        'close_ma21_dist': close_ma21_dist, # % jarak close ke EMA21 (TrendAgent)
+        'close_ma55_dist': close_ma55_dist, # % jarak close ke EMA55 (TrendAgent)
+        'adx':             adx_series,      # ADX Wilder's 14 (TrendAgent)
+        'volatility_20d':  volatility_20d,  # Volatilitas annualized (RiskAgent)
+        'days_in_regime':  days_in_regime,  # Durasi regime saat ini (RiskAgent)
+        'drawdown_pct':    drawdown_20d,    # Alias drawdown_20d untuk RiskAgent
+        'ma_cross_signal': ma_cross_signal, # 1=golden cross, -1=death cross (TrendAgent)
     })
 
 

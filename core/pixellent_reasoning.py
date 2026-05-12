@@ -315,6 +315,42 @@ class ReasoningEngine:
         # Template-based fallback (always works)
         return self._generate_template(ticker, signal_data, scores, regime_info)
 
+    def generate_from_analysis(self, analysis) -> str:
+        """
+        Generate narrative directly from FullAnalysis object (AgentOrchestrator output).
+        Convenience wrapper untuk integrasi langsung dari run_agent_analysis().
+
+        Args:
+            analysis: FullAnalysis object dari AgentOrchestrator.run_analysis()
+
+        Returns:
+            Narrative string dalam bahasa yang dikonfigurasi
+        """
+        md = analysis.master_decision
+        signal_data = {}
+        for out in analysis.agent_outputs.values():
+            signal_data.update(out.factors)
+
+        scores = {
+            "agent_scores": md.agent_scores,
+            "score": md.score,
+            "confidence": md.confidence,
+            "action": md.action,
+            "conflicts": md.conflicts,
+        }
+
+        regime_info = {
+            "risk_level": md.risk_level,
+            "action": md.action,
+        }
+
+        return self.generate(
+            ticker=analysis.ticker,
+            signal_data=signal_data,
+            scores=scores,
+            regime_info=regime_info,
+        )
+
     def generate_batch(
         self,
         items: List[Dict[str, Any]],
