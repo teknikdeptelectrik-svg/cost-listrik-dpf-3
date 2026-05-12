@@ -144,6 +144,26 @@ DASHBOARD_CSS = """
         margin: 8px 0;
         font-size: 0.9rem;
     }
+    .badge-data-quality {
+        font-size: 0.75rem;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-weight: bold;
+    }
+    .badge-position-size {
+        font-size: 0.8rem;
+        padding: 3px 10px;
+        border-radius: 10px;
+        font-weight: bold;
+        background: rgba(33, 150, 243, 0.15);
+        color: #2196f3;
+    }
+    .conflict-detail {
+        font-size: 0.82rem;
+        color: rgba(200, 200, 220, 0.7);
+        margin: 4px 0 0 0;
+        line-height: 1.5;
+    }
 </style>
 """
 
