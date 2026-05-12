@@ -35,6 +35,7 @@ import numpy as np
 import json
 import os
 import logging
+import tempfile
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
@@ -259,14 +260,28 @@ class TrendAgent(BaseAgent):
 
         # --- ADX strength (weight: 10%) ---
         adx = self._safe_get(data, "adx", 20.0)
-        # ADX > 25 = trending, > 40 = strong trend
-        adx_score = np.clip(adx * 2, 0, 100)
+        # ADX measures trend STRENGTH only, not direction.
+        # Combine with direction signals (ema_score + hma_score) to produce
+        # a directional ADX score: strong trend in bullish direction = high,
+        # strong trend in bearish direction = low, no trend = neutral (50).
+        adx_strength = np.clip(adx / 50.0, 0.0, 1.0)  # 0..1, peaks at ADX=50
+
+        # Determine direction from ema_score and hma_score (already computed above)
+        # ema_score & hma_score are 0-100, where >50 = bullish, <50 = bearish
+        direction_bias = ((ema_score + hma_score) / 2.0 - 50.0) / 50.0  # -1..+1
+
+        # ADX score: 50 (neutral) + direction * strength * 50
+        # Strong ADX + bullish direction → high score (up to 100)
+        # Strong ADX + bearish direction → low score (down to 0)
+        # Weak ADX (no trend) → stays near 50 regardless of direction
+        adx_score = 50.0 + direction_bias * adx_strength * 50.0
+        adx_score = np.clip(adx_score, 0, 100)
         factors["adx_score"] = round(adx_score, 1)
 
         if adx >= 40:
-            reasoning_parts.append(f"ADX={adx:.0f}, very strong trend")
+            reasoning_parts.append(f"ADX={adx:.0f}, very strong trend ({'bullish' if direction_bias > 0 else 'bearish'})")
         elif adx >= 25:
-            reasoning_parts.append(f"ADX={adx:.0f}, confirmed trend")
+            reasoning_parts.append(f"ADX={adx:.0f}, confirmed trend ({'bullish' if direction_bias > 0 else 'bearish'})")
         else:
             reasoning_parts.append(f"ADX={adx:.0f}, weak/no trend")
 
@@ -386,8 +401,9 @@ class SmartMoneyAgent(BaseAgent):
         # --- Volume Power (weight: 20%) ---
         vpower = self._safe_get(data, "vpower", 1.0)
         # vpower > 1 = more buying volume, < 1 = more selling volume
+        # Normalize: vpower=1.0 (neutral) → 50, vpower=1.5 → 75, vpower=0.5 → 25
         from core.constants import VPOWER_BASE, VPOWER_SCALE
-        vpower_score = np.clip((vpower - VPOWER_BASE) * VPOWER_SCALE, 0, 100)
+        vpower_score = np.clip((vpower - VPOWER_BASE) * VPOWER_SCALE + 50, 0, 100)
         factors["vpower_score"] = round(vpower_score, 1)
 
         if vpower >= 1.5:
@@ -893,15 +909,13 @@ class MasterDecisionAgent:
                 if trend_output.score > 60:
                     conflicts.append("RISK_OVERRIDE: Extreme risk caps bullish trend signal")
 
-        # If SmartMoney shows strong distribution but Trend is bullish (divergence)
+        # SmartMoney divergence is already detected in _detect_conflicts()
+        # as TREND_SM_GAP. Apply score penalty only if that conflict exists
+        # and SM is actively distributing — avoid double-counting.
         sm_output = agent_outputs.get("SmartMoneyAgent")
-        if sm_output and trend_output:
-            if sm_output.score < 30 and trend_output.score > 65:
-                # Smart money divergence — reduce score
-                composite_score -= 8
-                conflicts.append(
-                    "SM_DIVERGENCE: Smart money distributing despite bullish trend"
-                )
+        if sm_output and any("TREND_SM_GAP" in c for c in conflicts):
+            if sm_output.score < 30:
+                composite_score -= 8  # Penalize when SM actively distributing
 
         composite_score = np.clip(composite_score, 0, 100)
 
@@ -1984,7 +1998,6 @@ if __name__ == "__main__":
     print("─" * 70)
 
     # Use a temp path for testing (avoid polluting data/)
-    import tempfile
     temp_log = os.path.join(tempfile.gettempdir(), "pixellent_test_decisions.json")
     learner = AdaptiveLearning(log_path=temp_log)
 

@@ -610,6 +610,15 @@ def run_agent_analysis(
     # ── Convert signal_row → signal_data dict for TrendAgent + RiskAgent ──
     signal_data = {}
     if signal_row is not None and not signal_row.empty:
+        # Log warning untuk field kritis yang hilang (rekomendasi Ani + Toni)
+        critical_fields = ["ema_status", "adx", "hma5_slope", "volatility_20d", "drawdown_20d"]
+        missing = [f for f in critical_fields if signal_row.get(f) is None]
+        if missing:
+            logger.warning(
+                f"[{ticker}] Missing critical signal fields: {missing}. "
+                f"Agent will use default values — accuracy may be degraded."
+            )
+
         signal_data = {
             "ema_status": str(signal_row.get("ema_status", "NEUTRAL")).upper(),
             "trend_age": int(signal_row.get("trend_age", 0)),
@@ -624,7 +633,10 @@ def run_agent_analysis(
             "regime": str(signal_row.get("regime", "SIDEWAYS")).upper(),
             "atr_ratio": float(signal_row.get("atr_ratio", 1.0)),
             "volatility_20d": float(signal_row.get("volatility_20d", 25.0)),
-            "drawdown_pct": float(signal_row.get("drawdown_pct", 0.0)),
+            # [Fix Ani TINGGI-2] Gunakan drawdown_20d (max drawdown dari peak),
+            # BUKAN float_pct (unrealized P&L posisi) — maknanya berbeda
+            "drawdown_pct": float(signal_row.get("drawdown_20d",
+                                  signal_row.get("drawdown_pct", 0.0))),
             "rr_ratio": float(signal_row.get("rr_ratio", 1.0)),
             "days_in_regime": int(signal_row.get("days_in_regime", 0)),
         }
@@ -655,15 +667,29 @@ def run_agent_analysis(
             "relative_volume": 1.0,
         }
 
-    # ── Macro data (from regime_enhanced or provided) ──
+    # ── Macro data — integrasi compute_macro_score() (Fix Ani TINGGI-3) ──
     macro = macro_data or {}
-    if not macro and signal_row is not None:
-        macro = {
-            "market_score": float(signal_row.get("market_score", 50.0)),
-            "risk_level": str(signal_row.get("risk_level", "MEDIUM")),
-            "action_bias": str(signal_row.get("action_bias", "NORMAL")),
-            "sector": str(signal_row.get("sector", get_sector(ticker))),
-        }
+    if not macro:
+        # Coba panggil compute_macro_score dari pixellent_macro
+        try:
+            from pixellent_macro import compute_macro_score
+            macro_result = compute_macro_score()
+            if macro_result:
+                macro = macro_result
+        except (ImportError, Exception) as e:
+            logger.debug(f"compute_macro_score not available: {e}")
+
+        # Fallback ke signal_row jika macro masih kosong
+        if not macro and signal_row is not None:
+            macro = {
+                "market_score": float(signal_row.get("market_score", 50.0)),
+                "risk_level": str(signal_row.get("risk_level", "MEDIUM")),
+                "action_bias": str(signal_row.get("action_bias", "NORMAL")),
+                "sector": str(signal_row.get("sector", get_sector(ticker))),
+            }
+        elif signal_row is not None:
+            # Tambahkan sector dari signal_row jika belum ada
+            macro.setdefault("sector", str(signal_row.get("sector", get_sector(ticker))))
 
     # ── Sentiment ──
     sent = sentiment_data or {}
@@ -697,6 +723,26 @@ def run_agent_analysis(
         "agent_scores": md.agent_scores,
         "full_analysis": analysis,
     }
+
+    # ── Integrasi ReasoningEngine (Fix Ani MEDIUM-1 + Toni) ──
+    try:
+        from pixellent_reasoning import ReasoningEngine
+        reasoning_engine = ReasoningEngine(language="id")
+        narrative = reasoning_engine.generate(
+            ticker=ticker,
+            signal_data=signal_data,
+            scores={
+                "agent_scores": md.agent_scores,
+                "score": md.score,
+                "confidence": md.confidence,
+                "action": md.action,
+            },
+            regime_info=macro,
+        )
+        result["reasoning_narrative"] = narrative
+    except (ImportError, Exception) as e:
+        logger.debug(f"ReasoningEngine not available for {ticker}: {e}")
+        result["reasoning_narrative"] = md.reasoning
 
     # ── Phase 6 Integration: Portfolio Position Sizing ──
     if portfolio is not None and md.action in ("STRONG_BUY", "BUY"):
