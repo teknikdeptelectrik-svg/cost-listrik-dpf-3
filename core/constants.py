@@ -1,0 +1,275 @@
+"""
+Pixellent AI Engine — Centralized Constants v1.0
+
+All magic numbers, thresholds, and weights used across the engine are
+defined here for maintainability and auditability.
+
+Usage:
+    from core.constants import AGENT_WEIGHTS, DECISION_THRESHOLDS, ...
+"""
+
+# =============================================================================
+# 1. AGENT SYSTEM CONSTANTS
+# =============================================================================
+
+# Default agent weights (must sum to 1.0)
+AGENT_WEIGHTS = {
+    "TrendAgent": 0.30,
+    "SmartMoneyAgent": 0.25,
+    "RiskAgent": 0.25,
+    "MacroAgent": 0.20,
+}
+
+# MasterDecision thresholds (score → action)
+DECISION_THRESHOLDS = {
+    "STRONG_BUY": 75,
+    "BUY": 60,
+    "SELL": 40,
+    "STRONG_SELL": 25,
+}
+
+# Minimum confidence to trust a signal
+MIN_CONFIDENCE = 0.3
+
+# Conflict detection thresholds
+CONFLICT_SCORE_SPREAD = 40
+CONFLICT_TREND_SM_GAP = 30
+CONFLICT_TREND_RISK_GAP = 25
+
+# RISK_OVERRIDE: score cap when risk is EXTREME
+RISK_OVERRIDE_CAP = 50
+
+# SM_DIVERGENCE: penalty when SmartMoney distributing + Trend bullish
+SM_DIVERGENCE_PENALTY = 8
+SM_DIVERGENCE_SM_THRESHOLD = 30
+SM_DIVERGENCE_TREND_THRESHOLD = 65
+
+# Position size modifiers from RiskAgent
+POSITION_SIZE_MODIFIERS = {
+    "LOW_RISK": 1.3,
+    "MEDIUM_RISK": 1.0,
+    "ELEVATED_RISK": 0.7,
+    "HIGH_RISK": 0.4,
+    "EXTREME_RISK": 0.2,
+}
+
+# Risk level score boundaries
+RISK_LEVEL_THRESHOLDS = {
+    "LOW": 70,
+    "MEDIUM": 50,
+    "HIGH": 30,
+}
+
+# =============================================================================
+# 2. TREND AGENT CONSTANTS
+# =============================================================================
+
+EMA_STATUS_SCORES = {
+    "FULL_BULLISH": 90,
+    "PARTIAL_BULLISH": 68,
+    "NEUTRAL": 50,
+    "PARTIAL_BEARISH": 32,
+    "FULL_BEARISH": 10,
+}
+
+TREND_WEIGHTS = {
+    "ema": 0.30,
+    "trend_age": 0.20,
+    "hma": 0.20,
+    "ma_cross": 0.10,
+    "price_distance": 0.10,
+    "adx": 0.10,
+}
+
+SCORE_RECOMMENDATION = {
+    "strongly_bullish": 75,
+    "bullish": 60,
+    "neutral": 45,
+    "bearish": 30,
+}
+
+# =============================================================================
+# 3. SMART MONEY AGENT CONSTANTS
+# =============================================================================
+
+SMART_MONEY_WEIGHTS = {
+    "sm_score": 0.30,
+    "ff_score": 0.25,
+    "vpower": 0.20,
+    "bid_offer": 0.15,
+    "institutional": 0.10,
+}
+
+VPOWER_BASE = 0.5
+VPOWER_SCALE = 50
+
+SM_FLOW_THRESHOLDS = {
+    "strong_accumulation": 70,
+    "accumulation": 58,
+    "neutral_upper": 42,
+    "distribution": 30,
+}
+
+# =============================================================================
+# 4. RISK AGENT CONSTANTS
+# =============================================================================
+
+RISK_WEIGHTS = {
+    "regime": 0.25,
+    "atr": 0.20,
+    "volatility": 0.15,
+    "drawdown": 0.15,
+    "rr_ratio": 0.15,
+    "market_score": 0.10,
+}
+
+REGIME_RISK_SCORES = {
+    "TRENDING": 80,
+    "SIDEWAYS": 50,
+    "HIGH_VOL": 20,
+    "UNKNOWN": 45,
+}
+
+# =============================================================================
+# 5. MACRO AGENT CONSTANTS
+# =============================================================================
+
+MACRO_WEIGHTS = {
+    "macro_score": 0.35,
+    "sector_bias": 0.25,
+    "sentiment": 0.20,
+    "global": 0.20,
+}
+
+# =============================================================================
+# 6. COMPOSITE AI SCORE WEIGHTS (integration.py placeholder)
+# =============================================================================
+
+COMPOSITE_SCORE_WEIGHTS = {
+    "base_score": 0.40,
+    "smart_money": 0.25,
+    "foreign_flow": 0.20,
+    "market_regime": 0.15,
+}
+
+# =============================================================================
+# 7. SIGNAL ENGINE CONSTANTS
+# =============================================================================
+
+DEFAULT_SIGNAL_CONFIG = {
+    'entry_mode': 1,
+    'ihsg_mode': 0,
+    'min_value': 5_000_000_000,
+    'komisi_pct': 0.35,
+    'stop_pct': 3.0,
+    'trail_atr_mult': 2.0,
+    'target_atr_mult': 2.0,
+    'gap_buffer_pct': 0.5,
+    'fixed_risk': True,
+    'risk_per_trade_pct': 1.0,
+    'max_holding_bars': 15,
+    'min_profit_pct': 2.0,
+    'hhv_period': 20,
+    'atr_vol_mult': 1.5,
+    'roc_sideways': 2.0,
+    'roc_crash_pct': -5.0,
+    'action_zone_mult': 1.0,
+    'rrg_period': 10,
+    'rrg_mom_period': 3,
+    'pakai_fractal': 0,
+    'pakai_nf': 0,
+}
+
+ENTRY_MODE_TREND_AGE_MIN = {0: 40, 1: 20, 2: 5}
+ENTRY_MODE_HHV_DIVISOR = {0: 1, 1: 2, 2: None}
+
+# =============================================================================
+# 8. SCORING MODULE CONSTANTS
+# =============================================================================
+
+SCORING_HEURISTIC_WEIGHTS = {
+    "trend": 0.25,
+    "momentum": 0.25,
+    "smart_money": 0.20,
+    "foreign_flow": 0.15,
+    "liquidity": 0.05,
+    "risk_penalty": 0.10,
+}
+
+# =============================================================================
+# 9. ADAPTIVE LEARNING CONSTANTS
+# =============================================================================
+
+ADAPTIVE_LEARNING = {
+    "RETRAIN_THRESHOLD": 20,
+    "MIN_OUTCOMES_FOR_RETRAIN": 10,
+    "ROLLING_WINDOW": 100,
+    "DECAY_FACTOR": 0.97,
+    "MIN_WEIGHT": 0.10,
+    "MAX_WEIGHT": 0.45,
+}
+
+# =============================================================================
+# 10. YFINANCE CACHE CONSTANTS
+# =============================================================================
+
+YFINANCE_CACHE = {
+    "CACHE_DIR": "data/cache",
+    "STOCK_CACHE_TTL_HOURS": 1,
+    "IHSG_CACHE_TTL_HOURS": 1,
+    "MAX_CACHE_AGE_DAYS": 7,
+}
+
+# =============================================================================
+# 11. DATA QUALITY CONSTANTS
+# =============================================================================
+
+MANDATORY_FIELDS = {
+    "TrendAgent": ["ema_status", "trend_age", "hma_slope"],
+    "SmartMoneyAgent": ["sm_score", "ff_score", "vpower"],
+    "RiskAgent": ["regime", "atr_ratio"],
+    "MacroAgent": ["macro_score"],
+}
+
+DATA_QUALITY_LEVELS = {
+    "FULL": 1.0,
+    "ADEQUATE": 0.7,
+    "DEGRADED": 0.4,
+    "MINIMAL": 0.1,
+}
+
+# =============================================================================
+# 12. KEY MAPPING — signal_row → agent input
+# =============================================================================
+
+SIGNAL_TO_AGENT_MAP = {
+    "ema_status": "ema_status",
+    "trend_age": "trend_age",
+    "hma5_slope": "hma_slope",
+    "hma_slope": "hma_slope",
+    "ma_cross_signal": "ma_cross_signal",
+    "close_ma8_dist": "price_vs_ema8",
+    "close_ma21_dist": "price_vs_ema21",
+    "close_ma55_dist": "price_vs_ema55",
+    "adx": "adx",
+    "roc10": "roc_10",
+    "roc_10": "roc_10",
+    "regime": "regime",
+    "atr_ratio": "atr_ratio",
+    "volatility_20d": "volatility_20d",
+    "drawdown_pct": "drawdown_pct",
+    "drawdown_20d": "drawdown_pct",
+    "rr_ratio": "rr_ratio",
+    "days_in_regime": "days_in_regime",
+    "sm_score": "sm_score",
+    "ff_score": "ff_score",
+    "vpower": "vpower",
+    "ff_streak": "foreign_streak",
+    "foreign_streak": "foreign_streak",
+    "bid_offer_ratio": "bid_offer_ratio",
+    "sm_signal": "sm_signal",
+    "ff_signal": "ff_signal",
+    "relative_volume": "relative_volume",
+    "rvol": "relative_volume",
+    "avg_trade_size_z": "avg_trade_size_z",
+}
