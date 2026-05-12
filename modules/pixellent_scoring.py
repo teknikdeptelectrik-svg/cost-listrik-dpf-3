@@ -88,6 +88,7 @@ FEATURE_GROUPS = {
         'feat_hma5_slope', 'feat_hma5_above_close', 'feat_ma8_ma21_cross',
         'feat_ma21_ma55_cross', 'feat_close_above_ma21', 'feat_close_above_ma55',
         'feat_close_ma21_dist', 'feat_close_ma55_dist',
+        'feat_adx', 'feat_adx_direction',
     ],
     'Momentum': [
         'feat_rsi', 'feat_rsi_slope5', 'feat_ao', 'feat_ao_slope',
@@ -171,6 +172,16 @@ def build_features(
     feat['feat_close_above_ma55'] = (c > ma55).astype(float)
     feat['feat_close_ma21_dist'] = ((c - ma21) / c.replace(0, np.nan) * 100).fillna(0).clip(-20, 20)
     feat['feat_close_ma55_dist'] = ((c - ma55) / c.replace(0, np.nan) * 100).fillna(0).clip(-30, 30)
+
+    # ADX feature
+    try:
+        from modules.pixellent_indicators import adx as adx_indicator
+        adx_df = adx_indicator(h, l, c, 14)
+        feat['feat_adx'] = (adx_df['adx'] / 100).fillna(0.2).clip(0, 1)
+        feat['feat_adx_direction'] = (adx_df['plus_di'] > adx_df['minus_di']).astype(float)
+    except (ImportError, Exception):
+        feat['feat_adx'] = 0.2
+        feat['feat_adx_direction'] = 0.5
 
     # ── 2. MOMENTUM FEATURES ──
     rsi = signal_df.get('rsi', _compute_rsi(c, 14))

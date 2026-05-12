@@ -383,6 +383,43 @@ def rrg(close: pd.Series, benchmark_close: pd.Series,
 
 
 # =============================================================================
+# ADX — AVERAGE DIRECTIONAL INDEX [Audit Fix]
+# =============================================================================
+
+def adx(high: pd.Series, low: pd.Series, close: pd.Series,
+        period: int = 14) -> pd.DataFrame:
+    """
+    Average Directional Index (ADX) — Welles Wilder.
+    Returns DataFrame with columns: adx, plus_di, minus_di, adx_trend
+    """
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+    plus_dm = pd.Series(0.0, index=high.index)
+    plus_dm[(up_move > down_move) & (up_move > 0)] = up_move[(up_move > down_move) & (up_move > 0)]
+    minus_dm = pd.Series(0.0, index=high.index)
+    minus_dm[(down_move > up_move) & (down_move > 0)] = down_move[(down_move > up_move) & (down_move > 0)]
+    alpha = 1.0 / period
+    atr_smooth = tr.ewm(alpha=alpha, adjust=False).mean()
+    plus_dm_smooth = plus_dm.ewm(alpha=alpha, adjust=False).mean()
+    minus_dm_smooth = minus_dm.ewm(alpha=alpha, adjust=False).mean()
+    plus_di = (plus_dm_smooth / atr_smooth.replace(0, np.nan) * 100).fillna(0)
+    minus_di = (minus_dm_smooth / atr_smooth.replace(0, np.nan) * 100).fillna(0)
+    di_sum = plus_di + minus_di
+    di_diff = (plus_di - minus_di).abs()
+    dx = (di_diff / di_sum.replace(0, np.nan) * 100).fillna(0)
+    adx_val = dx.ewm(alpha=alpha, adjust=False).mean()
+    adx_trend = pd.Series('MODERATE', index=high.index)
+    adx_trend[adx_val >= 40] = 'STRONG'
+    adx_trend[(adx_val >= 25) & (adx_val < 40)] = 'TRENDING'
+    adx_trend[adx_val < 20] = 'WEAK'
+    return pd.DataFrame({'adx': adx_val, 'plus_di': plus_di, 'minus_di': minus_di, 'adx_trend': adx_trend})
+
+
+# =============================================================================
 # TEST CEPAT
 # =============================================================================
 if __name__ == '__main__':

@@ -73,6 +73,7 @@ class MasterDecision:
     conflicts: List[str] = field(default_factory=list)
     position_size_modifier: float = 1.0  # 0-1.5, from Risk Agent
     risk_level: str = "MEDIUM"
+    data_quality: float = 1.0  # 0-1, how complete the input data was
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
@@ -385,7 +386,8 @@ class SmartMoneyAgent(BaseAgent):
         # --- Volume Power (weight: 20%) ---
         vpower = self._safe_get(data, "vpower", 1.0)
         # vpower > 1 = more buying volume, < 1 = more selling volume
-        vpower_score = np.clip((vpower - 0.5) * 100, 0, 100)
+        from core.constants import VPOWER_BASE, VPOWER_SCALE
+        vpower_score = np.clip((vpower - VPOWER_BASE) * VPOWER_SCALE, 0, 100)
         factors["vpower_score"] = round(vpower_score, 1)
 
         if vpower >= 1.5:
@@ -734,6 +736,16 @@ class MacroAgent(BaseAgent):
         global_score += fx_adj.get(fx_stability, 0)
 
         global_score = np.clip(global_score, 0, 100)
+
+        # Use global_correlation to amplify/mute impact
+        if global_corr > 0.6 and global_score < 50:
+            correlation_penalty = (global_corr - 0.5) * 15
+            global_score -= correlation_penalty
+        elif global_corr < 0.3:
+            global_score = global_score * 0.7 + 50 * 0.3
+        factors["global_correlation"] = round(global_corr, 3)
+        global_score = np.clip(global_score, 0, 100)
+
         factors["global_score"] = round(global_score, 1)
 
         # --- Composite Score ---
@@ -826,8 +838,10 @@ class MasterDecisionAgent:
 
         # --- Determine weights ---
         if agent_weights is None:
-            agent_weights = {name: out.confidence for name, out in agent_outputs.items()}
-            # Normalize
+            from core.constants import AGENT_WEIGHTS
+            agent_weights = {}
+            for name in agent_outputs:
+                agent_weights[name] = AGENT_WEIGHTS.get(name, 0.25)
             total_w = sum(agent_weights.values())
             if total_w > 0:
                 agent_weights = {k: v / total_w for k, v in agent_weights.items()}
@@ -940,6 +954,19 @@ class MasterDecisionAgent:
                 conflicts.append("TREND_SM_GAP: Trend bullish but smart money not confirming")
             else:
                 conflicts.append("TREND_SM_GAP: Smart money accumulating but trend weak")
+
+        # Trend vs Risk conflict
+        from core.constants import CONFLICT_TREND_RISK_GAP
+        risk_s = scores.get("RiskAgent", 50)
+        if trend_s >= 60 and risk_s < 40:
+            gap = trend_s - risk_s
+            if gap >= CONFLICT_TREND_RISK_GAP:
+                risk_output = agent_outputs.get("RiskAgent")
+                risk_label = risk_output.factors.get("risk_label", "MEDIUM") if risk_output else "UNKNOWN"
+                conflicts.append(
+                    f"TREND_RISK_GAP: Trend bullish ({trend_s:.0f}) but "
+                    f"Risk is {risk_label} ({risk_s:.0f}). Gap={gap:.0f}."
+                )
 
         return conflicts
 
@@ -1075,6 +1102,11 @@ class AgentOrchestrator:
             FullAnalysis with all agent outputs + master decision
         """
         analysis = FullAnalysis(ticker=ticker)
+
+        data_quality = self._assess_data_quality(signal_data, extended_data, macro_data)
+        if data_quality < 0.4:
+            logger.warning(f"[{ticker}] Low data quality ({data_quality:.2f})")
+
         agent_outputs = {}
 
         # --- Run Trend Agent ---
@@ -1128,6 +1160,7 @@ class AgentOrchestrator:
 
             master_decision = self.master.decide(ticker, agent_outputs, weights)
             analysis.master_decision = master_decision
+            master_decision.data_quality = data_quality
         except Exception as e:
             logger.error(f"MasterDecisionAgent failed for {ticker}: {e}")
             analysis.errors.append(f"MasterDecision: {str(e)}")
@@ -1202,9 +1235,46 @@ class AgentOrchestrator:
         combined = {}
         if macro_data:
             combined.update(macro_data)
+        if "macro_score" not in combined:
+            try:
+                from modules.pixellent_macro import compute_macro_score
+                macro_result = compute_macro_score()
+                combined["macro_score"] = macro_result.get("macro_score", 50.0)
+                logger.info(f"MacroAgent: computed macro_score={combined['macro_score']:.1f} via fallback")
+            except (ImportError, Exception):
+                combined["macro_score"] = 50.0
         if sentiment_data:
             combined["sentiment_score"] = sentiment_data.get("sentiment_score", 50.0)
         return combined
+
+    def _assess_data_quality(self, signal_data, extended_data, macro_data):
+        from core.constants import MANDATORY_FIELDS
+        total_checks = 0
+        present_checks = 0
+        sig = signal_data or {}
+        ext = extended_data or {}
+        mac = macro_data or {}
+        for field in MANDATORY_FIELDS.get("TrendAgent", []):
+            total_checks += 1
+            if field in sig and sig[field] is not None:
+                present_checks += 1
+        for field in MANDATORY_FIELDS.get("SmartMoneyAgent", []):
+            total_checks += 1
+            if field in ext and ext[field] is not None:
+                present_checks += 1
+            elif field in sig and sig[field] is not None:
+                present_checks += 1
+        for field in MANDATORY_FIELDS.get("RiskAgent", []):
+            total_checks += 1
+            if field in sig and sig[field] is not None:
+                present_checks += 1
+        for field in MANDATORY_FIELDS.get("MacroAgent", []):
+            total_checks += 1
+            if field in mac and mac[field] is not None:
+                present_checks += 1
+        if total_checks == 0:
+            return 0.1
+        return round(present_checks / total_checks, 3)
 
 
 
@@ -1247,9 +1317,10 @@ class AdaptiveLearning:
     MIN_WEIGHT = 0.10            # Floor: no agent below 10%
     MAX_WEIGHT = 0.45            # Ceiling: no agent above 45%
 
-    def __init__(self, log_path: Optional[str] = None, auto_retrain: bool = True):
+    def __init__(self, log_path: Optional[str] = None, auto_retrain: bool = True, apply_immediately: bool = False):
         self.log_path = log_path or self.DEFAULT_LOG_PATH
         self.auto_retrain = auto_retrain
+        self.apply_immediately = apply_immediately
         self._decisions: List[Dict[str, Any]] = []
         self._last_retrain_count: int = 0  # Outcomes count at last retrain
         self._current_weights: Dict[str, float] = {}  # Persisted weights

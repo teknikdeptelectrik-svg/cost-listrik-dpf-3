@@ -47,6 +47,23 @@ from modules.pixellent_regime_enhanced import (
 logger = logging.getLogger(__name__)
 
 
+def _extract_ihsg_components(ihsg_df):
+    """Extract close/high/low from IHSG data."""
+    if isinstance(ihsg_df, pd.DataFrame) and not ihsg_df.empty:
+        ihsg_close = ihsg_df['close']
+        ihsg_high = ihsg_df.get('high') if 'high' in ihsg_df.columns else None
+        ihsg_low = ihsg_df.get('low') if 'low' in ihsg_df.columns else None
+    elif isinstance(ihsg_df, pd.Series) and not ihsg_df.empty:
+        ihsg_close = ihsg_df
+        ihsg_high = None
+        ihsg_low = None
+    else:
+        ihsg_close = None
+        ihsg_high = None
+        ihsg_low = None
+    return ihsg_close, ihsg_high, ihsg_low
+
+
 # ============================================================================
 # ENHANCED COMPUTE_SIGNALS — Single Stock
 # ============================================================================
@@ -154,9 +171,7 @@ def compute_signals_enhanced(
     if include_regime_enhanced and not ihsg_df.empty:
         try:
             # Get IHSG close for enhanced regime
-            ihsg_close = ihsg_df['close'] if isinstance(ihsg_df, pd.DataFrame) else ihsg_df
-            ihsg_high = ihsg_df.get('high') if isinstance(ihsg_df, pd.DataFrame) else None
-            ihsg_low = ihsg_df.get('low') if isinstance(ihsg_df, pd.DataFrame) else None
+            ihsg_close, ihsg_high, ihsg_low = _extract_ihsg_components(ihsg_df)
             
             regime_df = detect_regime_enhanced(
                 ihsg_close, ihsg_high, ihsg_low
@@ -252,9 +267,7 @@ def screen_all_enhanced(
     regime_summary = {}
     if not ihsg_df.empty:
         try:
-            ihsg_close = ihsg_df['close'] if isinstance(ihsg_df, pd.DataFrame) else ihsg_df
-            ihsg_high = ihsg_df.get('high') if isinstance(ihsg_df, pd.DataFrame) else None
-            ihsg_low = ihsg_df.get('low') if isinstance(ihsg_df, pd.DataFrame) else None
+            ihsg_close, ihsg_high, ihsg_low = _extract_ihsg_components(ihsg_df)
             
             regime_df = detect_regime_enhanced(ihsg_close, ihsg_high, ihsg_low)
             regime_summary = get_regime_summary(regime_df)
@@ -649,7 +662,7 @@ def run_agent_analysis(
             "market_score": float(signal_row.get("market_score", 50.0)),
             "risk_level": str(signal_row.get("risk_level", "MEDIUM")),
             "action_bias": str(signal_row.get("action_bias", "NORMAL")),
-            "sector": str(signal_row.get("sector", get_sector(ticker) if 'get_sector' in dir() else "unknown")),
+            "sector": str(signal_row.get("sector", get_sector(ticker))),
         }
 
     # ── Sentiment ──
