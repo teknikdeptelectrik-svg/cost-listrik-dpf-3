@@ -543,6 +543,10 @@ def compute_signals(df: pd.DataFrame,
     float_pct = ((c / buy_price_final.replace(0, np.nan) - 1) * 100
                  * in_pos_final.astype(float)).fillna(0)
 
+    # Drawdown 20-day
+    rolling_max_20 = c.rolling(20, min_periods=1).max()
+    drawdown_20d = ((c - rolling_max_20) / rolling_max_20.replace(0, np.nan) * 100).fillna(0)
+
     # [Ali Fix] Flag IHSG H/L real untuk warning di dashboard
     ihsg_hl_real = bool(regime_df.get('ihsg_hl_real', pd.Series(False)).iloc[-1])                    if 'ihsg_hl_real' in regime_df.columns else False
 
@@ -589,6 +593,7 @@ def compute_signals(df: pd.DataFrame,
         'target_final': target_final,        # [A3]
         'buy_price_final': buy_price_final,  # [A3]
         'float_pct': float_pct,              # [A2]
+        'drawdown_20d': drawdown_20d,
         'bars_since_buy': bars_since,
         'stop_pct_arr': stop_pct_arr, 'max_hold_used': max_hold_used,
         'rr_ratio': rr_ratio,
