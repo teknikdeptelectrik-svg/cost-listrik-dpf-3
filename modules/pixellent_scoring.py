@@ -38,7 +38,9 @@ from pathlib import Path
 import warnings
 import logging
 
-warnings.filterwarnings('ignore')
+# [FIX #2] Scoped warnings — only suppress known noisy libraries, not global
+warnings.filterwarnings('ignore', category=UserWarning, module='xgboost')
+warnings.filterwarnings('ignore', category=FutureWarning, module='sklearn')
 logger = logging.getLogger(__name__)
 
 # Optional dependencies with graceful fallback

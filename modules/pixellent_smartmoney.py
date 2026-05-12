@@ -300,13 +300,22 @@ def foreign_flow_streak(foreign_buy: pd.Series, foreign_sell: pd.Series) -> pd.S
     Consecutive days of net buy/sell by foreigners — VECTORIZED.
     Positive = N days consecutive net buy
     Negative = N days consecutive net sell
+
+    [FIX #3] Delegates to pixellent_foreignflow._compute_streak() to avoid
+    duplicated logic. Falls back to inline implementation if import fails.
     """
     net = foreign_buy - foreign_sell
+    try:
+        from modules.pixellent_foreignflow import _compute_streak
+        return _compute_streak(net)
+    except ImportError:
+        pass
+    # Fallback: inline implementation (identical logic)
     sign = np.sign(net.values)
     result = np.zeros(len(sign), dtype=int)
     if len(sign) == 0:
         return pd.Series(result, index=net.index)
-    
+
     result[0] = sign[0]
     for i in range(1, len(sign)):
         if sign[i] == 0:

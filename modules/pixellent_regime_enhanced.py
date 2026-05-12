@@ -25,7 +25,8 @@ import numpy as np
 import pandas as pd
 from typing import Optional, Dict
 
-from pixellent_indicators import atr
+# [FIX #1] Correct import path after folder reorganization
+from modules.pixellent_indicators import atr
 
 
 # =============================================================================
