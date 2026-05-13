@@ -164,14 +164,18 @@ DEFAULT_SIGNAL_CONFIG = {
     'ihsg_mode': 0,
     'min_value': 5_000_000_000,
     'komisi_pct': 0.35,
-    'stop_pct': 3.0,
-    'trail_atr_mult': 2.0,
+    'stop_pct': 5.0,                     # [FIX-WR] dari 3.0 → 5.0
+    'trail_atr_mult': 2.5,               # [FIX-WR] dari 2.0 → 2.5
+    'trail_atr_mult_trending': 3.0,      # [FIX-WR] trailing saat TRENDING lebih longgar
+    'trail_activation_r': 1.0,           # [FIX-WR] trailing aktif setelah profit >= 1R
     'target_atr_mult': 2.0,
-    'gap_buffer_pct': 0.5,
+    'target_rr_partial': 1.5,            # [FIX-WR] TP1 partial di 1.5R
+    'partial_exit_pct': 50,              # [FIX-WR] % posisi keluar di TP1
+    'gap_buffer_pct': 0.3,               # [FIX-WR] dari 0.5 → 0.3
     'fixed_risk': True,
     'risk_per_trade_pct': 1.0,
-    'max_holding_bars': 15,
-    'min_profit_pct': 2.0,
+    'max_holding_bars': 25,              # [FIX-WR] dari 15 → 25
+    'min_profit_pct': 1.0,               # [FIX-WR] dari 2.0 → 1.0
     'hhv_period': 20,
     'atr_vol_mult': 1.5,
     'roc_sideways': 2.0,
@@ -183,8 +187,8 @@ DEFAULT_SIGNAL_CONFIG = {
     'pakai_nf': 0,
 }
 
-ENTRY_MODE_TREND_AGE_MIN = {0: 40, 1: 20, 2: 5}
-ENTRY_MODE_HHV_DIVISOR = {0: 1, 1: 2, 2: None}
+ENTRY_MODE_TREND_AGE_MIN = {0: 40, 1: 10, 2: 3}  # [FIX-WR] 1:20→10, 2:5→3
+ENTRY_MODE_HHV_DIVISOR = {0: 1, 1: 2, 2: None}  # entry_mode 2 = no HHV filter
 
 # =============================================================================
 # 8. SCORING MODULE CONSTANTS

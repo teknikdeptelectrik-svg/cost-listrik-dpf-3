@@ -55,7 +55,7 @@ END_DATE   = "2026-05-11"
 
 # Parameter backtest
 MIN_BARS        = 100
-AGENT_THRESHOLD = 60    # Minimum AI Agent score untuk AMBIL sinyal (0=tanpa filter)
+AGENT_THRESHOLD = 45    # [FIX-WR] dari 60 → 45 (match distribusi heuristic score)
 USE_AGENT_FILTER = True # True = pakai AI Agent filter, False = ambil semua buy_signal
 
 # AdaptiveLearning
@@ -247,12 +247,17 @@ def simulate_trades(
 ) -> List[Trade]:
     """
     Simulasi posisi bar-by-bar PERSIS seperti engine bekerja.
+    [FIX-WR] v2.1 — Hybrid Exit dengan:
+      - Delayed trailing (trailing baru aktif setelah profit >= 1R)
+      - TP1 partial di 1.5R (50% posisi keluar, stop → breakeven)
+      - Sisa posisi trailing sampai exit
 
     Entry: buy_signal=True + (AI Agent score >= threshold jika USE_AGENT_FILTER)
     Exit:  Yang pertama kena dari:
            1. close >= target_final → WIN (TARGET_HIT)
-           2. close < stop_aktif → LOSS (STOP_HIT)
+           2. close < stop_aktif → cek trailing vs hard_stop (STOP_HIT)
            3. sell_signal=True → cek profit/loss (SELL_SIGNAL)
+           4. TP1 partial di 1.5R → 50% keluar, sisa trailing (PARTIAL_TP)
     """
     trades = []
     in_position = False
@@ -271,6 +276,11 @@ def simulate_trades(
     target = signal_df.get("target_final", pd.Series(np.inf, index=signal_df.index))
     stop_aktif = signal_df.get("stop_aktif", hard_stop)
     buy_price_final = signal_df.get("buy_price_final", open_price)
+
+    # [FIX-WR] Hybrid exit params
+    TRAIL_ACTIVATION_R = 1.0   # Trailing aktif setelah profit >= 1R
+    TP1_R = 1.5                # Partial profit di 1.5R
+    PARTIAL_PCT = 0.5          # 50% posisi keluar di TP1
 
     for i in range(len(signal_df)):
         idx = signal_df.index[i]
@@ -301,7 +311,16 @@ def simulate_trades(
 
                 # Ambil target & stop yang dikunci saat buy
                 locked_target = target.iloc[i] if target.iloc[i] > 0 else entry_price * 1.05
-                locked_stop = stop_aktif.iloc[i] if stop_aktif.iloc[i] > 0 else entry_price * 0.965
+                locked_hard_stop = hard_stop.iloc[i] if hard_stop.iloc[i] > 0 else entry_price * 0.947
+
+                # [FIX-WR] 1R = risiko awal (entry - hard_stop)
+                risk_1r = entry_price - locked_hard_stop
+                locked_stop = locked_hard_stop  # mulai dari hard_stop, trailing delayed
+
+                # [FIX-WR] Tracking state untuk hybrid exit
+                tp1_hit = False        # sudah partial exit?
+                trail_active = False   # trailing sudah aktif?
+                trail_high_val = entry_price  # tracking highest price
 
                 current_trade = Trade(
                     ticker=ticker,
@@ -315,6 +334,40 @@ def simulate_trades(
         else:
             # === CHECK EXIT (bar-by-bar) ===
             bars_held = (i - signal_df.index.get_loc(current_trade.entry_date))
+
+            # Update trail_high
+            if h > trail_high_val:
+                trail_high_val = h
+
+            # [FIX-WR] Check trailing activation: profit >= 1R
+            unrealized_profit = c - current_trade.entry_price
+            if not trail_active and unrealized_profit >= (risk_1r * TRAIL_ACTIVATION_R):
+                trail_active = True
+
+            # [FIX-WR] Update stop berdasarkan trailing state
+            if trail_active:
+                # Trailing aktif — pakai dynamic trailing stop
+                # Ambil trail_mult dari regime (trending=3.0, else=2.5)
+                regime_val = signal_df.get("regime", pd.Series("UNKNOWN", index=signal_df.index))
+                if i < len(regime_val):
+                    curr_regime = regime_val.iloc[i]
+                    t_mult = 3.0 if curr_regime == "TRENDING" else 2.5
+                else:
+                    t_mult = 2.5
+                atr_val = signal_df.get("atr14", pd.Series(0, index=signal_df.index)).iloc[i]
+                trailing_stop_val = trail_high_val - t_mult * atr_val
+                locked_stop = max(locked_stop, trailing_stop_val)  # ratchet up only
+
+            # [FIX-WR] TP1 Partial: jika high >= entry + 1.5R dan belum TP1
+            if not tp1_hit and risk_1r > 0:
+                tp1_level = current_trade.entry_price + (risk_1r * TP1_R)
+                if h >= tp1_level:
+                    tp1_hit = True
+                    # Move stop ke breakeven (entry price)
+                    locked_stop = max(locked_stop, current_trade.entry_price)
+                    # Partial exit dicatat sebagai bonus return (simulated)
+                    # Dalam simulasi sederhana: kita record satu trade tapi
+                    # dengan return yang memperhitungkan partial exit at TP1
 
             # Priority 1: Target hit (cek high dulu — intraday bisa hit target)
             if h >= locked_target:
@@ -336,7 +389,14 @@ def simulate_trades(
                 current_trade.exit_reason = "STOP_HIT"
                 current_trade.return_pct = (locked_stop - current_trade.entry_price) / current_trade.entry_price * 100
                 current_trade.bars_held = bars_held
-                current_trade.is_win = False
+                # [FIX-WR] Jika TP1 sudah hit, hasilnya adalah blend:
+                # 50% di TP1 + 50% di stop (bisa breakeven atau profit)
+                if tp1_hit:
+                    tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
+                    stop_return = (locked_stop - current_trade.entry_price) / current_trade.entry_price * 100
+                    current_trade.return_pct = tp1_return * PARTIAL_PCT + stop_return * (1 - PARTIAL_PCT)
+                    current_trade.exit_reason = "PARTIAL_TP+TRAIL_STOP"
+                current_trade.is_win = current_trade.return_pct > 0
                 trades.append(current_trade)
                 in_position = False
                 current_trade = None
@@ -348,17 +408,18 @@ def simulate_trades(
                 current_trade.exit_price = c
                 current_trade.exit_reason = "SELL_SIGNAL"
                 current_trade.return_pct = (c - current_trade.entry_price) / current_trade.entry_price * 100
+                # [FIX-WR] Blend jika TP1 sudah hit
+                if tp1_hit:
+                    tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
+                    sell_return = (c - current_trade.entry_price) / current_trade.entry_price * 100
+                    current_trade.return_pct = tp1_return * PARTIAL_PCT + sell_return * (1 - PARTIAL_PCT)
+                    current_trade.exit_reason = "PARTIAL_TP+SELL_SIGNAL"
                 current_trade.bars_held = bars_held
                 current_trade.is_win = current_trade.return_pct > 0
                 trades.append(current_trade)
                 in_position = False
                 current_trade = None
                 continue
-
-            # Update trailing stop (ratchet up only)
-            new_stop = stop_aktif.iloc[i]
-            if new_stop > locked_stop:
-                locked_stop = new_stop
 
     # Close open position at last bar
     if in_position and current_trade:
@@ -367,6 +428,10 @@ def simulate_trades(
         current_trade.exit_price = last_close
         current_trade.exit_reason = "END_OF_DATA"
         current_trade.return_pct = (last_close - current_trade.entry_price) / current_trade.entry_price * 100
+        if tp1_hit:
+            tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
+            end_return = (last_close - current_trade.entry_price) / current_trade.entry_price * 100
+            current_trade.return_pct = tp1_return * PARTIAL_PCT + end_return * (1 - PARTIAL_PCT)
         current_trade.bars_held = len(signal_df) - signal_df.index.get_loc(current_trade.entry_date)
         current_trade.is_win = current_trade.return_pct > 0
         trades.append(current_trade)

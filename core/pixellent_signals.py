@@ -37,14 +37,18 @@ DEFAULT_CONFIG = {
     'ihsg_mode':         0,
     'min_value':         5_000_000_000,
     'komisi_pct':        0.35,
-    'stop_pct':          3.0,
-    'trail_atr_mult':    2.0,
+    'stop_pct':          5.0,            # [FIX-WR] dari 3.0 → 5.0 (BEI volatil)
+    'trail_atr_mult':    2.5,            # [FIX-WR] dari 2.0 → 2.5 (trailing longgar)
+    'trail_atr_mult_trending': 3.0,      # [FIX-WR] trailing saat TRENDING lebih longgar
+    'trail_activation_r': 1.0,           # [FIX-WR] trailing baru aktif setelah profit >= 1R
     'target_atr_mult':   2.0,
-    'gap_buffer_pct':    0.5,
+    'target_rr_partial': 1.5,            # [FIX-WR] TP1 partial di 1.5R
+    'partial_exit_pct':  50,             # [FIX-WR] % posisi keluar di TP1
+    'gap_buffer_pct':    0.3,            # [FIX-WR] dari 0.5 → 0.3
     'fixed_risk':        True,
     'risk_per_trade_pct':1.0,
-    'max_holding_bars':  15,
-    'min_profit_pct':    2.0,
+    'max_holding_bars':  25,             # [FIX-WR] dari 15 → 25
+    'min_profit_pct':    1.0,            # [FIX-WR] dari 2.0 → 1.0
     'hhv_period':        20,
     'atr_vol_mult':      1.5,
     'roc_sideways':      2.0,
@@ -325,7 +329,7 @@ def compute_signals(df: pd.DataFrame,
     else:                        hh_ok = pd.Series(True, index=c.index)
 
     # ── Trend Age ──
-    ta_min = {0:40, 1:20, 2:5}.get(cfg['entry_mode'], 20)
+    ta_min = {0:40, 1:10, 2:3}.get(cfg['entry_mode'], 10)  # [FIX-WR] 1:20→10, 2:5→3
     ta_ok  = ta >= ta_min
 
     # ── Action Zone ──
@@ -413,7 +417,11 @@ def compute_signals(df: pd.DataFrame,
     buy_pass1    = pd.Series(buy_pass1_np, index=c.index)
 
     # Trailing High & Stop
-    trail_mult = cfg['trail_atr_mult']
+    # [FIX-WR] Dynamic trail_mult per regime
+    trail_mult_base = cfg['trail_atr_mult']
+    trail_mult_trending = cfg.get('trail_atr_mult_trending', trail_mult_base)
+    trail_activation_r = cfg.get('trail_activation_r', 1.0)
+
     trail_high = np.zeros(len(c))
     for i in range(len(c)):
         if buy_pass1_np[i]:
@@ -423,7 +431,13 @@ def compute_signals(df: pd.DataFrame,
         else:
             trail_high[i] = h.iloc[i]
     trail_high_s = pd.Series(trail_high, index=c.index)
-    trail_stop_s = trail_high_s - trail_mult * atr14s
+
+    # [FIX-WR] Dynamic trailing multiplier per regime
+    trail_mult_arr = pd.Series(trail_mult_base, index=c.index)
+    if 'trending' in regime_df.columns:
+        trending_mask = regime_df['trending'].reindex(c.index, method='ffill').fillna(False)
+        trail_mult_arr[trending_mask] = trail_mult_trending
+    trail_stop_s = trail_high_s - trail_mult_arr * atr14s
 
     # HardStop & Target & BuyPrice dikunci saat Buy_Pass1 (pre-compute arrays)
     _open_arr = o.values
@@ -449,7 +463,19 @@ def compute_signals(df: pd.DataFrame,
         c.index
     )
 
-    stop_aktif    = pd.concat([hard_stop_p1, trail_stop_s], axis=1).max(axis=1)
+    # [FIX-WR] CRITICAL: Trailing baru aktif setelah profit >= 1R
+    # Sebelum profit >= 1R, gunakan hard_stop saja (beri ruang napas)
+    # 1R = jarak entry ke hard_stop (risiko awal per-trade)
+    _risk_1r = buy_price_p1 - hard_stop_p1  # 1R = entry - hard_stop
+    _activation_level = buy_price_p1 + (_risk_1r * trail_activation_r)  # profit >= 1R
+    _trail_active = c >= _activation_level  # trailing aktif saat sudah profit cukup
+
+    # Saat trailing belum aktif → pakai hard_stop
+    # Saat trailing aktif → pakai MAX(hard_stop, trail_stop) = trail_stop biasanya
+    stop_aktif = hard_stop_p1.copy()
+    stop_aktif[_trail_active] = pd.concat(
+        [hard_stop_p1[_trail_active], trail_stop_s[_trail_active]], axis=1
+    ).max(axis=1)
     sell_manual_s = c < stop_aktif
 
     # InPosition Pass1 — for trailing stop & regime exit
