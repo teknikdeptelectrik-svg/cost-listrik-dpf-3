@@ -55,7 +55,7 @@ END_DATE   = "2026-05-11"
 
 # Parameter backtest
 MIN_BARS        = 100
-AGENT_THRESHOLD = 45    # [FIX-WR] dari 60 → 45 (match distribusi heuristic score)
+AGENT_THRESHOLD = 40    # [WR80] dari 45 → 40 (FTT signals sudah high-quality, less filter needed)
 USE_AGENT_FILTER = True # True = pakai AI Agent filter, False = ambil semua buy_signal
 
 # AdaptiveLearning

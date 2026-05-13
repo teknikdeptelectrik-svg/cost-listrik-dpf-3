@@ -34,10 +34,11 @@ from modules.pixellent_indicators import (
 # =============================================================================
 DEFAULT_CONFIG = {
     'entry_mode':        1,
+    'ftt_mode':          True,           # [WR80] Follow The Trend mode (primary)
     'ihsg_mode':         0,
     'min_value':         5_000_000_000,
     'komisi_pct':        0.35,
-    'stop_pct':          5.0,            # [FIX-WR] dari 3.0 → 5.0 (BEI volatil)
+    'stop_pct':          5.0,            # [FIX-WR] fallback stop (FTT uses structural SL)
     'trail_atr_mult':    2.5,            # [FIX-WR] dari 2.0 → 2.5 (trailing longgar)
     'trail_atr_mult_trending': 3.0,      # [FIX-WR] trailing saat TRENDING lebih longgar
     'trail_activation_r': 1.0,           # [FIX-WR] trailing baru aktif setelah profit >= 1R
@@ -47,7 +48,7 @@ DEFAULT_CONFIG = {
     'gap_buffer_pct':    0.3,            # [FIX-WR] dari 0.5 → 0.3
     'fixed_risk':        True,
     'risk_per_trade_pct':1.0,
-    'max_holding_bars':  25,             # [FIX-WR] dari 15 → 25
+    'max_holding_bars':  40,             # [WR80] dari 25 → 40 (let profit run in trend)
     'min_profit_pct':    1.0,            # [FIX-WR] dari 2.0 → 1.0
     'hhv_period':        20,
     'atr_vol_mult':      1.5,
@@ -380,8 +381,80 @@ def compute_signals(df: pd.DataFrame,
     max_hold_used = int(max_hold_arr.iloc[-1])
 
     # ──────────────────────────────────────────
-    # BUY CONDITIONS
+    # BUY CONDITIONS — "Follow the Trend" Setup
     # ──────────────────────────────────────────
+    # [WR80] CORE PRINCIPLE: Buy PULLBACK in confirmed uptrend
+    # Setup user: CANDLE>MA20, MA20>MA50, MA50>MA100 → TUNGGU KOREKSI ke EMA8/SMA20
+
+    # ── [WR80] MA Triple Alignment (MA20>MA50>MA100) ──
+    ma50  = c.rolling(50).mean()
+    ma100 = c.rolling(100).mean()
+    ma200 = c.rolling(200).mean()
+
+    # Strict trend confirmation: MA tersusun rapi (identik setup user)
+    ma_triple_align = (ma21 > ma50) & (ma50 > ma100)  # MA20>MA50>MA100
+    ma_mega_align   = ma_triple_align & (ma100 > ma200)  # + MA100>MA200 (bonus)
+
+    # Close harus di atas MA20 (CANDLE>MA20)
+    candle_above_ma20 = c > ma21
+
+    # ── [WR80] Golden Cross EMA8/SMA20 ──
+    ema8_above_sma20    = ma8 > ma21
+    golden_cross_active = ema8_above_sma20  # sudah golden cross dan bertahan
+
+    # ── [WR80] PULLBACK Detection — Rebound dari EMA8 atau SMA20 ──
+    # Pullback ke EMA8: low menyentuh/dekat EMA8 tapi close di atas
+    near_ema8  = (l <= ma8 * 1.005) & (c > ma8)   # low dekat EMA8, close rebound
+    # Pullback ke SMA20: low menyentuh/dekat SMA20 tapi close di atas
+    near_sma20 = (l <= ma21 * 1.005) & (c > ma21)  # low dekat SMA20, close rebound
+    # Cross candle SMA20: kemarin di bawah, hari ini di atas
+    cross_sma20 = (c.shift(1) < ma21.shift(1)) & (c > ma21)
+
+    pullback_entry = near_ema8 | near_sma20 | cross_sma20
+
+    # ── [WR80] HHHL Pattern — Higher High Higher Low ──
+    # Swing high/low detection (5-bar)
+    swing_high = h.rolling(5, center=True).max() == h
+    swing_low  = l.rolling(5, center=True).min() == l
+
+    # Higher High: current high > previous swing high
+    prev_swing_h = h.where(swing_high).ffill()
+    higher_high  = h > prev_swing_h.shift(1)
+
+    # Higher Low: current low > previous swing low
+    prev_swing_l = l.where(swing_low).ffill()
+    higher_low   = l > prev_swing_l.shift(1)
+
+    # HHHL pattern: both conditions met recently (within 10 bars)
+    hh_recent = higher_high.rolling(10).sum() > 0
+    hl_recent = higher_low.rolling(10).sum() > 0
+    hhhl_pattern = hh_recent & hl_recent
+
+    # ── [WR80] Volume Confirmation ──
+    vol_ok_ftt = v > vrt * 0.8  # volume minimal 80% rata-rata (tidak perlu spike)
+
+    # ── [WR80] BULLISH CANDLE on pullback day ──
+    bullish_candle = c > o  # close > open = candle hijau (rebound confirmation)
+
+    # ══════════════════════════════════════════
+    # FOLLOW THE TREND BUY SIGNAL (PRIMARY — for WR80%)
+    # ══════════════════════════════════════════
+    buy_ftt = (
+        candle_above_ma20 &       # CANDLE > MA20
+        ma_triple_align &          # MA20 > MA50 > MA100
+        golden_cross_active &      # EMA8 > SMA20 (golden cross active)
+        pullback_entry &           # TUNGGU KOREKSI ke EMA8/SMA20
+        hhhl_pattern &             # HHHL confirmed
+        bullish_candle &           # Candle rebound (hijau)
+        vol_ok_ftt &               # Volume minimal ada
+        likuid &                   # Likuid
+        regime_ok &                # Not HIGH_VOL
+        ~sideways_arr              # Not sideways
+    )
+
+    # ══════════════════════════════════════════
+    # LEGACY BUY SIGNALS (Secondary — tetap ada untuk screening)
+    # ══════════════════════════════════════════
     buy_doji = (
         ac_naik & likuid & ihsg_up &
         ((c - o).abs() <= tick * 2) &
@@ -397,18 +470,32 @@ def compute_signals(df: pd.DataFrame,
         filter_fractal & filter_nf &
         regime_ok
     )
-    buy_raw    = buy_doji | buy_bullish
+    buy_legacy = buy_doji | buy_bullish
+
+    # ── [WR80] Mode selection: FTT primary, legacy as fallback ──
+    if cfg.get('ftt_mode', True):
+        # Follow The Trend mode: prioritas FTT, legacy hanya jika FTT juga aktif
+        buy_raw = buy_ftt | (buy_legacy & ma_triple_align & candle_above_ma20)
+    else:
+        # Legacy mode (backward compat)
+        buy_raw = buy_legacy
+
     buy_raw_np = buy_raw.values
 
     # ──────────────────────────────────────────
-    # SELL RAW BASE — 3 kondisi teknikal murni
+    # SELL RAW BASE — Follow the Trend Exit Logic
+    # [WR80] SL ketat di bawah EMA8/SMA20, trailing saat HHHL
     # [A1] SellRegimeExit TIDAK di sini
     # ──────────────────────────────────────────
     l1 = l.shift(1)
     sell_breakdown = (c < o) & (c < l1) & (v > vrt)
     sell_ha_hma    = (~ha_bull) & (hma5 > c) & (hma5.shift(1) <= c.shift(1))
     sell_vol_spike = (c < o) & (v > vp2)
-    sell_raw_base  = sell_breakdown | sell_ha_hma | sell_vol_spike
+
+    # [WR80] Sell saat close < SMA20 (breakdown structure — identik setup user)
+    sell_below_sma20 = (c < ma21) & (c.shift(1) >= ma21.shift(1))  # break down MA20
+
+    sell_raw_base  = sell_breakdown | sell_ha_hma | sell_vol_spike | sell_below_sma20
 
     # ──────────────────────────────────────────
     # PASS 1 — ExRem(BuyRaw, SellRawBase)
@@ -451,6 +538,20 @@ def compute_signals(df: pd.DataFrame,
         lambda i: _open_arr[i] * (1 - (_stop_pct_arr_vals[i] + _gap_buf) / 100),
         c.index
     )
+
+    # [WR80] FTT Stop: SL di bawah SMA20 (lebih ketat, tapi structural)
+    # Jika trend confirmed (MA20>MA50>MA100), SL = MA20 - 1 tick buffer
+    # Ini lebih ketat dari 5% tapi STRUCTURAL — sesuai setup user
+    if cfg.get('ftt_mode', True):
+        _ma21_vals = ma21.values
+        ftt_stop_p1 = _lock_at_buy(
+            buy_pass1_np,
+            lambda i: _ma21_vals[i] * (1 - 0.005),  # SL = SMA20 - 0.5% buffer
+            c.index
+        )
+        # Pakai yang LEBIH TINGGI: FTT stop (structural) vs hard_stop (percentage)
+        hard_stop_p1 = pd.concat([hard_stop_p1, ftt_stop_p1], axis=1).max(axis=1)
+    
     target_p1 = _lock_at_buy(
         buy_pass1_np,
         lambda i: max(_open_arr[i] + _tgt_mult * _atr14s_vals[i],
