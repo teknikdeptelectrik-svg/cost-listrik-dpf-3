@@ -150,6 +150,9 @@ def load_ihsg(conn) -> Optional[pd.DataFrame]:
                 df = pd.DataFrame(rows, columns=["trade_date","open","high","low","close","volume"])
                 df["trade_date"] = pd.to_datetime(df["trade_date"])
                 df = df.set_index("trade_date")
+                # Force Decimal → float (PostgreSQL returns Decimal)
+                for col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
                 return df
     except Exception as e:
         logger.warning(f"IHSG load failed: {e}")

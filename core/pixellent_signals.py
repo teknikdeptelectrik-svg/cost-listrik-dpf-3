@@ -262,10 +262,10 @@ def compute_signals(df: pd.DataFrame,
     if df.empty or len(df) < 60:
         return pd.DataFrame()
 
-    # [FIX] Force all numeric columns to float (PostgreSQL returns Decimal)
-    for col in df.columns:
-        if df[col].dtype == object or hasattr(df[col].iloc[0], 'as_integer_ratio') is False:
-            df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
+    # [FIX] Force ALL columns to float64 (PostgreSQL returns decimal.Decimal)
+    for col in df.select_dtypes(include=['object']).columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.astype(float, errors='ignore')
 
     o, h, l, c, v = df['open'], df['high'], df['low'], df['close'], df['volume']
 
