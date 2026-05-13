@@ -55,8 +55,9 @@ END_DATE   = "2026-05-11"
 
 # Parameter backtest
 MIN_BARS        = 100
-AGENT_THRESHOLD = 60    # Minimum AI Agent score untuk AMBIL sinyal (0=tanpa filter)
+AGENT_THRESHOLD = 65    # Minimum AI Agent score untuk AMBIL sinyal (0=tanpa filter)
 USE_AGENT_FILTER = True # True = pakai AI Agent filter, False = ambil semua buy_signal
+MIN_RR_RATIO    = 1.5   # Minimum Risk/Reward ratio untuk ambil trade
 
 # Biaya transaksi IDX (realistis)
 FEE_BUY_PCT   = 0.15   # Komisi beli 0.15%
@@ -321,6 +322,12 @@ def simulate_trades(
                 if locked_target <= entry_price or locked_stop >= entry_price:
                     continue
 
+                # SKIP jika RR ratio terlalu kecil
+                potential_gain = locked_target - entry_price
+                potential_loss = entry_price - locked_stop
+                if potential_loss <= 0 or (potential_gain / potential_loss) < MIN_RR_RATIO:
+                    continue
+
                 current_trade = Trade(
                     ticker=ticker,
                     entry_date=entry_date,
@@ -364,10 +371,12 @@ def simulate_trades(
 
             # Priority 3: Sell signal dari engine
             if sell_sig.iloc[i]:
+                # SELL_SIGNAL exit dibatasi: tidak boleh lebih buruk dari stop
+                exit_price = max(c, locked_stop)
                 current_trade.exit_date = idx
-                current_trade.exit_price = c
+                current_trade.exit_price = exit_price
                 current_trade.exit_reason = "SELL_SIGNAL"
-                current_trade.return_pct = (c - current_trade.entry_price) / current_trade.entry_price * 100 - TOTAL_FEE_PCT
+                current_trade.return_pct = (exit_price - current_trade.entry_price) / current_trade.entry_price * 100 - TOTAL_FEE_PCT
                 current_trade.bars_held = bars_held
                 current_trade.is_win = current_trade.return_pct > 0
                 trades.append(current_trade)
