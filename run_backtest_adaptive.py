@@ -351,20 +351,7 @@ def simulate_trades(
             if bars_held < 1:
                 bars_held = 1
 
-            # Priority 1: Target hit (cek high dulu — intraday bisa hit target)
-            if h >= locked_target:
-                current_trade.exit_date = idx
-                current_trade.exit_price = locked_target
-                current_trade.exit_reason = "TARGET_HIT"
-                current_trade.return_pct = (locked_target - current_trade.entry_price) / current_trade.entry_price * 100 - TOTAL_FEE_PCT
-                current_trade.bars_held = bars_held
-                current_trade.is_win = current_trade.return_pct > 0
-                trades.append(current_trade)
-                in_position = False
-                current_trade = None
-                continue
-
-            # Priority 2: Stop hit (cek low — intraday bisa kena stop)
+            # Priority 1: Stop hit (cek low — intraday bisa kena stop)
             if l <= locked_stop:
                 current_trade.exit_date = idx
                 current_trade.exit_price = locked_stop
@@ -377,9 +364,9 @@ def simulate_trades(
                 current_trade = None
                 continue
 
-            # Priority 3: Sell signal dari engine
+            # Priority 2: Sell signal dari engine
             if sell_sig.iloc[i]:
-                # SELL_SIGNAL exit dibatasi: tidak boleh lebih buruk dari stop
+                # Exit di close, tapi trailing stop sudah protect profit
                 exit_price = max(c, locked_stop)
                 current_trade.exit_date = idx
                 current_trade.exit_price = exit_price
@@ -392,7 +379,7 @@ def simulate_trades(
                 current_trade = None
                 continue
 
-            # Update trailing stop (ratchet up only)
+            # Priority 3: Trailing stop ratchet up — LET WINNERS RUN
             new_stop = stop_aktif.iloc[i]
             if new_stop > locked_stop:
                 locked_stop = new_stop
