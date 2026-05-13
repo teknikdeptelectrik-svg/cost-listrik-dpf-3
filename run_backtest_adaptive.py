@@ -98,6 +98,9 @@ class Trade:
     bars_held: int = 0
     agent_score: float = 0.0
     agent_action: str = ""
+    agent_scores: Dict[str, float] = field(default_factory=dict)  # Per-agent scores from orchestrator
+    agent_confidence: float = 0.0
+    agent_risk_level: str = "MEDIUM"
     is_win: bool = False
 
 
@@ -261,9 +264,10 @@ def run_agent_scoring(signal_row: pd.Series, ticker: str, orchestrator) -> Dict[
             "action": md.action,
             "confidence": md.confidence,
             "risk_level": md.risk_level,
+            "agent_scores": md.agent_scores,  # Actual per-agent scores
         }
     except Exception:
-        return {"score": 50.0, "action": "HOLD", "confidence": 0.0, "risk_level": "MEDIUM"}
+        return {"score": 50.0, "action": "HOLD", "confidence": 0.0, "risk_level": "MEDIUM", "agent_scores": {}}
 
 
 # =============================================================================
@@ -330,10 +334,16 @@ def simulate_trades(
                 # AI Agent filter
                 agent_score = 0.0
                 agent_action = "N/A"
+                agent_scores_dict = {}
+                agent_confidence = 0.0
+                agent_risk_level = "MEDIUM"
                 if USE_AGENT_FILTER and orchestrator is not None:
                     result = run_agent_scoring(signal_df.iloc[i], ticker, orchestrator)
                     agent_score = result["score"]
                     agent_action = result["action"]
+                    agent_scores_dict = result.get("agent_scores", {})
+                    agent_confidence = result.get("confidence", 0.0)
+                    agent_risk_level = result.get("risk_level", "MEDIUM")
 
                     # SKIP kalau score di bawah threshold
                     if agent_score < AGENT_THRESHOLD:
@@ -370,6 +380,9 @@ def simulate_trades(
                     entry_price=entry_price,
                     agent_score=agent_score,
                     agent_action=agent_action,
+                    agent_scores=agent_scores_dict,
+                    agent_confidence=agent_confidence,
+                    agent_risk_level=agent_risk_level,
                 )
                 in_position = True
 
@@ -543,28 +556,37 @@ def compute_metrics(trades: List[Trade]) -> Dict[str, Any]:
 # =============================================================================
 
 def feed_adaptive_learning(learner, orchestrator, ticker: str, trades: List[Trade]):
-    """Feed trade results ke AdaptiveLearning untuk update bobot agent."""
+    """
+    Feed trade results ke AdaptiveLearning untuk update bobot agent.
+    
+    FIXED: Now passes ACTUAL per-agent scores (from orchestrator run during
+    simulate_trades) instead of fabricated approximations.
+    
+    Flow:
+        Backtest selesai → feed_adaptive_learning() per saham
+        → record ke agent_decisions.json (DENGAN agent_scores REAL)
+        → 20 outcomes → auto retrain
+        → bobot update di agent_weights.json
+        → next run pakai bobot baru
+    """
     try:
         from core.pixellent_agents import MasterDecision
 
         for trade in trades:
-            # Get agent scores by re-running scoring (if available)
-            agent_scores = {}
-            if orchestrator and trade.agent_score > 0:
-                # Use the master score distributed proportionally as approximation
-                agent_scores = {
-                    "TrendAgent": trade.agent_score * 1.1,       # Trend usually scores higher
-                    "SmartMoneyAgent": trade.agent_score * 0.95,
-                    "RiskAgent": trade.agent_score * 0.9,
-                    "MacroAgent": 50.0,                          # Macro always neutral (no data)
-                }
+            # Use ACTUAL agent_scores from orchestrator (stored during simulate_trades)
+            agent_scores = trade.agent_scores if trade.agent_scores else {}
+
+            # If agent_scores is empty (e.g., agent filter was off), skip recording
+            # since we can't learn without per-agent breakdown
+            if not agent_scores and trade.agent_score <= 0:
+                continue
 
             decision = MasterDecision(
                 ticker=ticker,
                 action=trade.agent_action if trade.agent_action != "N/A" else "BUY",
                 score=trade.agent_score,
-                confidence=min(trade.agent_score / 100, 1.0),
-                risk_level="MEDIUM",
+                confidence=trade.agent_confidence,
+                risk_level=trade.agent_risk_level,
                 position_size_modifier=1.0,
                 reasoning=f"Backtest {ticker} {trade.entry_date}",
                 conflicts=[],
@@ -610,7 +632,7 @@ def main():
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from core.pixellent_agents import AdaptiveLearning, AgentOrchestrator
         learner = AdaptiveLearning(
-            log_path="data/logs/adaptive_decisions.json",
+            log_path=AdaptiveLearning.DEFAULT_LOG_PATH,
             auto_retrain=AUTO_RETRAIN,
             apply_immediately=APPLY_IMMEDIATELY,
         )
@@ -691,7 +713,8 @@ def main():
     if learner and orchestrator:
         logger.info("\n--- AdaptiveLearning: Retrain ---")
         try:
-            new_weights = learner.retrain_if_needed(orchestrator)
+            # Force retrain: after full backtest we always have enough data
+            new_weights = learner.adjust_weights(orchestrator, learner.ROLLING_WINDOW)
             if new_weights:
                 logger.info("Bobot agent DIUPDATE:")
                 for agent, w in new_weights.items():

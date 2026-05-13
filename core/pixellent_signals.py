@@ -732,6 +732,39 @@ def compute_signals(df: pd.DataFrame,
     # [Ali Fix] Flag IHSG H/L real untuk warning di dashboard
     ihsg_hl_real = bool(regime_df.get('ihsg_hl_real', pd.Series(False)).iloc[-1])                    if 'ihsg_hl_real' in regime_df.columns else False
 
+    # ── SmartMoney + ForeignFlow Integration ──
+    # Compute sm_score, ff_score, ff_streak, ff_signal, sm_signal
+    _has_ff_data = ('foreign_buy' in df.columns and 'foreign_sell' in df.columns
+                    and not df['foreign_buy'].isna().all()
+                    and not df['foreign_sell'].isna().all())
+
+    if _has_ff_data:
+        from modules.pixellent_smartmoney import smart_money_score as _sm_score_func
+        from modules.pixellent_foreignflow import analyze_stock_foreign_flow as _ff_analyze
+
+        _fb = df['foreign_buy'].fillna(0)
+        _fs = df['foreign_sell'].fillna(0)
+
+        # SmartMoney composite score (includes foreign flow component)
+        _sm_df = _sm_score_func(c, h, l, v, value=None, frequency=None,
+                                foreign_buy=_fb, foreign_sell=_fs,
+                                bid_vol=None, offer_vol=None)
+        sm_score_s = _sm_df['sm_score']
+        sm_signal_s = _sm_df['sm_signal']
+
+        # ForeignFlow dedicated analysis
+        _ff_df = _ff_analyze(_fb, _fs, v, c)
+        ff_score_s = _ff_df['ff_score']
+        ff_streak_s = _ff_df['ff_streak']
+        ff_signal_s = _ff_df['ff_signal']
+    else:
+        logger.info("NO FF DATA — foreign_buy/foreign_sell not available, using fallback score=50")
+        sm_score_s = pd.Series(50.0, index=c.index)
+        sm_signal_s = pd.Series('Neutral', index=c.index)
+        ff_score_s = pd.Series(50.0, index=c.index)
+        ff_streak_s = pd.Series(0, index=c.index)
+        ff_signal_s = pd.Series('Neutral', index=c.index)
+
     # RRG & Score
     rrg_df = rrg(c, ihsg_aligned, cfg['rrg_period'], cfg['rrg_mom_period'])
     ac_rel  = ac / c.replace(0, np.nan)
@@ -794,6 +827,12 @@ def compute_signals(df: pd.DataFrame,
         'days_in_regime':  days_in_regime,  # Durasi regime saat ini (RiskAgent)
         'drawdown_pct':    drawdown_20d,    # Alias drawdown_20d untuk RiskAgent
         'ma_cross_signal': ma_cross_signal, # 1=golden cross, -1=death cross (TrendAgent)
+        # ── SmartMoney + ForeignFlow columns ──
+        'sm_score':        sm_score_s,       # SmartMoney composite 0-100
+        'sm_signal':       sm_signal_s,      # SmartMoney categorical signal
+        'ff_score':        ff_score_s,       # ForeignFlow composite 0-100
+        'ff_streak':       ff_streak_s,      # Consecutive net buy/sell days
+        'ff_signal':       ff_signal_s,      # ForeignFlow categorical signal
     })
 
 
