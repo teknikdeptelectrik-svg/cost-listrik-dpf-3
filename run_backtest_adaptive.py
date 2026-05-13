@@ -142,6 +142,10 @@ def load_stock_data(conn, ticker: str) -> pd.DataFrame:
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    # Convert semua kolom ke float64 (PostgreSQL returns Decimal objects)
+    for col in df.select_dtypes(include=['object', 'number']).columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce').astype('float64')
+
     # Filter data harga nol/invalid — mencegah division by zero
     df = df[(df["open"] > 0) & (df["close"] > 0) & (df["high"] > 0) & (df["low"] > 0)]
 
@@ -160,6 +164,10 @@ def load_ihsg(conn) -> Optional[pd.DataFrame]:
                 df = pd.DataFrame(rows, columns=["trade_date","open","high","low","close","volume"])
                 df["trade_date"] = pd.to_datetime(df["trade_date"])
                 df = df.set_index("trade_date")
+                # Convert Decimal → float64
+                for col in ["open", "high", "low", "close", "volume"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').astype('float64')
                 return df
     except Exception as e:
         logger.warning(f"IHSG load failed: {e}")
