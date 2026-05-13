@@ -58,6 +58,11 @@ MIN_BARS        = 100
 AGENT_THRESHOLD = 60    # Minimum AI Agent score untuk AMBIL sinyal (0=tanpa filter)
 USE_AGENT_FILTER = True # True = pakai AI Agent filter, False = ambil semua buy_signal
 
+# Biaya transaksi IDX (realistis)
+FEE_BUY_PCT   = 0.15   # Komisi beli 0.15%
+FEE_SELL_PCT  = 0.25   # Komisi jual 0.25% (termasuk pajak 0.1%)
+TOTAL_FEE_PCT = FEE_BUY_PCT + FEE_SELL_PCT  # 0.40% roundtrip
+
 # AdaptiveLearning
 AUTO_RETRAIN      = True
 APPLY_IMMEDIATELY = True
@@ -135,6 +140,10 @@ def load_stock_data(conn, ticker: str) -> pd.DataFrame:
     df = df.set_index("trade_date")
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Filter data harga nol/invalid — mencegah division by zero
+    df = df[(df["open"] > 0) & (df["close"] > 0) & (df["high"] > 0) & (df["low"] > 0)]
+
     return df
 
 
@@ -286,6 +295,11 @@ def simulate_trades(
                     continue
                 entry_price = open_price.iloc[i + 1]
                 entry_date = signal_df.index[i + 1]
+                entry_bar_idx = i + 1
+
+                # SKIP jika entry_price invalid
+                if entry_price <= 0 or np.isnan(entry_price) or np.isinf(entry_price):
+                    continue
 
                 # AI Agent filter
                 agent_score = 0.0
@@ -303,6 +317,10 @@ def simulate_trades(
                 locked_target = target.iloc[i] if target.iloc[i] > 0 else entry_price * 1.05
                 locked_stop = stop_aktif.iloc[i] if stop_aktif.iloc[i] > 0 else entry_price * 0.965
 
+                # SKIP jika target/stop tidak masuk akal
+                if locked_target <= entry_price or locked_stop >= entry_price:
+                    continue
+
                 current_trade = Trade(
                     ticker=ticker,
                     entry_date=entry_date,
@@ -314,16 +332,18 @@ def simulate_trades(
 
         else:
             # === CHECK EXIT (bar-by-bar) ===
-            bars_held = (i - signal_df.index.get_loc(current_trade.entry_date))
+            bars_held = i - entry_bar_idx
+            if bars_held < 1:
+                bars_held = 1
 
             # Priority 1: Target hit (cek high dulu — intraday bisa hit target)
             if h >= locked_target:
                 current_trade.exit_date = idx
                 current_trade.exit_price = locked_target
                 current_trade.exit_reason = "TARGET_HIT"
-                current_trade.return_pct = (locked_target - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (locked_target - current_trade.entry_price) / current_trade.entry_price * 100 - TOTAL_FEE_PCT
                 current_trade.bars_held = bars_held
-                current_trade.is_win = True
+                current_trade.is_win = current_trade.return_pct > 0
                 trades.append(current_trade)
                 in_position = False
                 current_trade = None
@@ -334,7 +354,7 @@ def simulate_trades(
                 current_trade.exit_date = idx
                 current_trade.exit_price = locked_stop
                 current_trade.exit_reason = "STOP_HIT"
-                current_trade.return_pct = (locked_stop - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (locked_stop - current_trade.entry_price) / current_trade.entry_price * 100 - TOTAL_FEE_PCT
                 current_trade.bars_held = bars_held
                 current_trade.is_win = False
                 trades.append(current_trade)
@@ -347,7 +367,7 @@ def simulate_trades(
                 current_trade.exit_date = idx
                 current_trade.exit_price = c
                 current_trade.exit_reason = "SELL_SIGNAL"
-                current_trade.return_pct = (c - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (c - current_trade.entry_price) / current_trade.entry_price * 100 - TOTAL_FEE_PCT
                 current_trade.bars_held = bars_held
                 current_trade.is_win = current_trade.return_pct > 0
                 trades.append(current_trade)
@@ -366,8 +386,8 @@ def simulate_trades(
         current_trade.exit_date = signal_df.index[-1]
         current_trade.exit_price = last_close
         current_trade.exit_reason = "END_OF_DATA"
-        current_trade.return_pct = (last_close - current_trade.entry_price) / current_trade.entry_price * 100
-        current_trade.bars_held = len(signal_df) - signal_df.index.get_loc(current_trade.entry_date)
+        current_trade.return_pct = (last_close - current_trade.entry_price) / current_trade.entry_price * 100 - TOTAL_FEE_PCT
+        current_trade.bars_held = max(len(signal_df) - entry_bar_idx, 1)
         current_trade.is_win = current_trade.return_pct > 0
         trades.append(current_trade)
 
@@ -383,10 +403,15 @@ def compute_metrics(trades: List[Trade]) -> Dict[str, Any]:
     if not trades:
         return {}
 
-    n = len(trades)
-    wins = [t for t in trades if t.is_win]
-    losses = [t for t in trades if not t.is_win]
-    returns = [t.return_pct for t in trades]
+    # Filter out trades with invalid returns (inf/nan)
+    valid_trades = [t for t in trades if np.isfinite(t.return_pct)]
+    if not valid_trades:
+        return {"n_trades": len(trades), "error": "All trades have invalid returns"}
+
+    n = len(valid_trades)
+    wins = [t for t in valid_trades if t.is_win]
+    losses = [t for t in valid_trades if not t.is_win]
+    returns = [t.return_pct for t in valid_trades]
     win_returns = [t.return_pct for t in wins]
     loss_returns = [t.return_pct for t in losses]
 
@@ -395,23 +420,23 @@ def compute_metrics(trades: List[Trade]) -> Dict[str, Any]:
 
     # Exit reason breakdown
     exit_reasons = {}
-    for t in trades:
+    for t in valid_trades:
         exit_reasons[t.exit_reason] = exit_reasons.get(t.exit_reason, 0) + 1
 
     metrics = {
         "n_trades": n,
         "n_wins": len(wins),
         "n_losses": len(losses),
-        "win_rate": len(wins) / n,
-        "avg_return_pct": np.mean(returns),
-        "median_return_pct": np.median(returns),
+        "win_rate": len(wins) / n if n > 0 else 0,
+        "avg_return_pct": float(np.mean(returns)) if returns else 0,
+        "median_return_pct": float(np.median(returns)) if returns else 0,
         "total_return_pct": sum(returns),
-        "avg_win_pct": np.mean(win_returns) if win_returns else 0,
-        "avg_loss_pct": np.mean(loss_returns) if loss_returns else 0,
+        "avg_win_pct": float(np.mean(win_returns)) if win_returns else 0,
+        "avg_loss_pct": float(np.mean(loss_returns)) if loss_returns else 0,
         "max_win_pct": max(returns) if returns else 0,
         "max_loss_pct": min(returns) if returns else 0,
-        "profit_factor": gross_profit / max(gross_loss, 0.01),
-        "avg_bars_held": np.mean([t.bars_held for t in trades]),
+        "profit_factor": gross_profit / gross_loss if gross_loss > 0 else (999.99 if gross_profit > 0 else 0),
+        "avg_bars_held": float(np.mean([t.bars_held for t in valid_trades])),
         "exit_reasons": exit_reasons,
     }
 
@@ -422,10 +447,13 @@ def compute_metrics(trades: List[Trade]) -> Dict[str, Any]:
     )
 
     # Max drawdown (sequential)
-    cum = np.cumsum(returns)
-    peak = np.maximum.accumulate(cum)
-    dd = cum - peak
-    metrics["max_drawdown_pct"] = float(dd.min()) if len(dd) > 0 else 0
+    if returns:
+        cum = np.cumsum(returns)
+        peak = np.maximum.accumulate(cum)
+        dd = cum - peak
+        metrics["max_drawdown_pct"] = float(dd.min())
+    else:
+        metrics["max_drawdown_pct"] = 0
 
     return metrics
 
@@ -474,7 +502,8 @@ def main():
     logger.info("=" * 70)
     logger.info("PIXELLENT BACKTEST v2.0 — REALISTIC ENGINE SIMULATION")
     logger.info(f"Periode: {START_DATE} → {END_DATE}")
-    logger.info(f"Agent Filter: {'ON (threshold={})'.format(AGENT_THRESHOLD) if USE_AGENT_FILTER else 'OFF'}")
+    logger.info(f"Agent Filter: {'ON (threshold=' + str(AGENT_THRESHOLD) + ')' if USE_AGENT_FILTER else 'OFF'}")
+    logger.info(f"Fee roundtrip: {TOTAL_FEE_PCT:.2f}%")
     logger.info("=" * 70)
 
     # Database
@@ -648,7 +677,7 @@ def main():
         logger.info("\n" + "=" * 70)
         logger.info("HASIL BACKTEST — REALISTIC ENGINE SIMULATION v2.0")
         logger.info("=" * 70)
-        logger.info(f"Agent Filter     : {'ON (>={AGENT_THRESHOLD})' if USE_AGENT_FILTER else 'OFF'}")
+        logger.info(f"Agent Filter     : {'ON (>=' + str(AGENT_THRESHOLD) + ')' if USE_AGENT_FILTER else 'OFF'}")
         logger.info(f"Saham diproses   : {len(per_stock_metrics)}")
         logger.info(f"Total trades     : {overall['n_trades']:,}")
         logger.info(f"Win / Loss       : {overall['n_wins']} / {overall['n_losses']}")
