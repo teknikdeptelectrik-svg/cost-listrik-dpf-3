@@ -41,14 +41,13 @@ def find_ihsg_csv(folder: str) -> str:
         if matches:
             return matches[0]
 
-    # Kalau tidak ketemu, cari semua CSV
-    all_csv = glob.glob(os.path.join(folder, "*.csv"))
-    if all_csv:
-        print(f"File CSV yang ditemukan di folder:")
-        for f in all_csv:
+    # Kalau tidak ketemu, cari semua CSV dan Excel
+    all_files = glob.glob(os.path.join(folder, "*.csv")) + glob.glob(os.path.join(folder, "*.xlsx")) + glob.glob(os.path.join(folder, "*.xls"))
+    if all_files:
+        print(f"File yang ditemukan di folder:")
+        for f in all_files:
             print(f"  - {os.path.basename(f)}")
-        # Ambil yang pertama atau tanya user
-        return all_csv[0]
+        return all_files[0]
 
     return ""
 
@@ -57,7 +56,10 @@ def load_csv(filepath: str) -> pd.DataFrame:
     """Load dan parse CSV file IHSG."""
     print(f"Loading: {filepath}")
 
-    df = pd.read_csv(filepath)
+    if filepath.endswith(('.xlsx', '.xls')):
+        df = pd.read_excel(filepath)
+    else:
+        df = pd.read_csv(filepath)
     print(f"  Kolom asli: {list(df.columns)}")
     print(f"  Rows: {len(df)}")
 
