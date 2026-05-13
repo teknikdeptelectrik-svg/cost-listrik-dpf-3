@@ -134,7 +134,7 @@ def load_stock_data(conn, ticker: str) -> pd.DataFrame:
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     df = df.set_index("trade_date")
     for col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
     return df
 
 

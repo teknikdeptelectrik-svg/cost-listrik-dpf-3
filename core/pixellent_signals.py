@@ -262,6 +262,11 @@ def compute_signals(df: pd.DataFrame,
     if df.empty or len(df) < 60:
         return pd.DataFrame()
 
+    # [FIX] Force all numeric columns to float (PostgreSQL returns Decimal)
+    for col in df.columns:
+        if df[col].dtype == object or hasattr(df[col].iloc[0], 'as_integer_ratio') is False:
+            df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
+
     o, h, l, c, v = df['open'], df['high'], df['low'], df['close'], df['volume']
 
     # ── Indikator ──
