@@ -57,7 +57,7 @@ END_DATE   = "2026-05-11"
 MIN_BARS        = 100
 AGENT_THRESHOLD = 65    # Minimum AI Agent score untuk AMBIL sinyal (0=tanpa filter)
 USE_AGENT_FILTER = True # True = pakai AI Agent filter, False = ambil semua buy_signal
-MIN_RR_RATIO    = 1.5   # Minimum Risk/Reward ratio untuk ambil trade
+MIN_RR_RATIO    = 0.0   # Minimum Risk/Reward ratio (0 = tidak filter RR)
 
 # Biaya transaksi IDX (realistis)
 FEE_BUY_PCT   = 0.15   # Komisi beli 0.15%
