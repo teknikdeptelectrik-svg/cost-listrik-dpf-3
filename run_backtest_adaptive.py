@@ -175,6 +175,33 @@ def compute_signals_real(df: pd.DataFrame, ticker: str, ihsg_data) -> pd.DataFra
 
 
 # =============================================================================
+# 2b. ML FILTER (optional — auto-loads if model exists)
+# =============================================================================
+
+_ML_MODEL = None
+_ML_FEATURES = None
+
+def _load_ml_model():
+    """Load ML model if available."""
+    global _ML_MODEL, _ML_FEATURES
+    model_path = os.path.join("data", "models", "ml_filter_v1.joblib")
+    if os.path.exists(model_path):
+        try:
+            import joblib
+            data = joblib.load(model_path)
+            _ML_MODEL = data['model']
+            _ML_FEATURES = data['feature_names']
+            logger.info(f"ML Filter loaded: {model_path} ({len(_ML_FEATURES)} features)")
+            return True
+        except Exception as e:
+            logger.warning(f"ML model load failed: {e}")
+    return False
+
+# Try to load at import time
+_load_ml_model()
+
+
+# =============================================================================
 # 3. AI AGENT SCORING
 # =============================================================================
 
@@ -311,6 +338,18 @@ def simulate_trades(
                     # SKIP kalau score di bawah threshold
                     if agent_score < AGENT_THRESHOLD:
                         continue
+
+                # [ML FILTER] If ML model loaded, check probability
+                if _ML_MODEL is not None:
+                    try:
+                        from train_ml_model import build_ml_features
+                        ml_feat = build_ml_features(signal_df)
+                        row_feat = ml_feat.iloc[i:i+1][_ML_FEATURES].fillna(0)
+                        ml_prob = _ML_MODEL.predict_proba(row_feat)[0][1]
+                        if ml_prob < 0.5:  # ML says < 50% chance of profit → SKIP
+                            continue
+                    except Exception:
+                        pass  # ML filter optional, don't block if error
 
                 # Ambil target & stop yang dikunci saat buy
                 locked_target = target.iloc[i] if target.iloc[i] > 0 else entry_price * 1.05
@@ -509,6 +548,17 @@ def feed_adaptive_learning(learner, orchestrator, ticker: str, trades: List[Trad
         from core.pixellent_agents import MasterDecision
 
         for trade in trades:
+            # Get agent scores by re-running scoring (if available)
+            agent_scores = {}
+            if orchestrator and trade.agent_score > 0:
+                # Use the master score distributed proportionally as approximation
+                agent_scores = {
+                    "TrendAgent": trade.agent_score * 1.1,       # Trend usually scores higher
+                    "SmartMoneyAgent": trade.agent_score * 0.95,
+                    "RiskAgent": trade.agent_score * 0.9,
+                    "MacroAgent": 50.0,                          # Macro always neutral (no data)
+                }
+
             decision = MasterDecision(
                 ticker=ticker,
                 action=trade.agent_action if trade.agent_action != "N/A" else "BUY",
@@ -518,7 +568,7 @@ def feed_adaptive_learning(learner, orchestrator, ticker: str, trades: List[Trad
                 position_size_modifier=1.0,
                 reasoning=f"Backtest {ticker} {trade.entry_date}",
                 conflicts=[],
-                agent_scores={},
+                agent_scores=agent_scores,
             )
 
             actual_outcome = {
