@@ -78,16 +78,16 @@ LOG_PATH    = "data/logs/backtest.log"
 # EXPERIMENT CONFIG — Override engine parameters
 # =============================================================================
 # Exp2: Lebih longgar, beri ruang napas, let profit run
-EXPERIMENT_NAME = "Exp3-OPT1-SWING — target=5xATR, TP1=3R, trail_act=2R, hold≤40d"
+EXPERIMENT_NAME = "Exp3-OPT1-SWING2 — target=4xATR, TP1=2.5R, trail=1.5R, DD=OFF"
 
 SIGNAL_CONFIG = {
     'stop_pct':              7.0,     # SL fallback 7%
     'ftt_stop_buffer_pct':   3.0,     # SL = SMA20 - 3%
     'trail_atr_mult':        3.0,     # Trailing normal regime
     'trail_atr_mult_trending': 3.5,   # Trailing saat TRENDING
-    'trail_activation_r':    2.0,     # [SWING] trailing baru aktif setelah 2R (dari 1.5)
-    'target_atr_mult':       5.0,     # [SWING] target 5x ATR (dari 3.0) — let profit run
-    'target_rr_partial':     3.0,     # [SWING] TP1 partial di 3R (dari 2.0)
+    'trail_activation_r':    1.5,     # [SWING] trailing aktif setelah 1.5R
+    'target_atr_mult':       4.0,     # [SWING] target 4x ATR — sweet spot
+    'target_rr_partial':     2.5,     # [SWING] TP1 partial di 2.5R
     'max_holding_bars':      40,      # [SWING] max 40 hari (dari 60) — swing timeframe
     'min_profit_pct':        2.0,     # time exit hanya kalau belum profit 2%
     'gap_buffer_pct':        0.5,     # gap buffer
