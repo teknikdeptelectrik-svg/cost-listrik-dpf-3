@@ -545,13 +545,14 @@ def compute_signals(df: pd.DataFrame,
     )
 
     # [WR80] FTT Stop: SL di bawah SMA20 (lebih ketat, tapi structural)
-    # Jika trend confirmed (MA20>MA50>MA100), SL = MA20 - 1 tick buffer
-    # Ini lebih ketat dari 5% tapi STRUCTURAL — sesuai setup user
+    # Jika trend confirmed (MA20>MA50>MA100), SL = MA20 - buffer
+    # Buffer configurable via 'ftt_stop_buffer_pct' (default 1.5%)
     if cfg.get('ftt_mode', True):
         _ma21_vals = ma21.values
+        _ftt_buffer = cfg.get('ftt_stop_buffer_pct', 1.5) / 100.0  # default 1.5%
         ftt_stop_p1 = _lock_at_buy(
             buy_pass1_np,
-            lambda i: _ma21_vals[i] * (1 - 0.005),  # SL = SMA20 - 0.5% buffer
+            lambda i: _ma21_vals[i] * (1 - _ftt_buffer),  # SL = SMA20 - buffer%
             c.index
         )
         # Pakai yang LEBIH TINGGI: FTT stop (structural) vs hard_stop (percentage)

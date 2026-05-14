@@ -55,7 +55,7 @@ END_DATE   = "2026-05-11"
 
 # Parameter backtest
 MIN_BARS        = 100
-AGENT_THRESHOLD = 40    # [WR80] dari 45 → 40 (FTT signals sudah high-quality, less filter needed)
+AGENT_THRESHOLD = 50    # [Exp2] dari 40 → 50 (hanya signal high-quality)
 USE_AGENT_FILTER = True # True = pakai AI Agent filter, False = ambil semua buy_signal
 
 # AdaptiveLearning
@@ -63,8 +63,27 @@ AUTO_RETRAIN      = True
 APPLY_IMMEDIATELY = True
 
 # Output
-REPORT_PATH = "backtest_report.json"
+REPORT_PATH = "backtest_report_exp2.json"
 LOG_PATH    = "data/logs/backtest.log"
+
+# =============================================================================
+# EXPERIMENT CONFIG — Override engine parameters
+# =============================================================================
+# Exp2: Lebih longgar, beri ruang napas, let profit run
+EXPERIMENT_NAME = "Exp2 — stop=7%, ftt_buffer=1.5%, target=3xATR, threshold=50"
+
+SIGNAL_CONFIG = {
+    'stop_pct':              7.0,     # [Exp2] dari 5% → 7% (lebih longgar)
+    'ftt_stop_buffer_pct':   1.5,     # [Exp2] dari 0.5% → 1.5% (SL = SMA20 - 1.5%)
+    'trail_atr_mult':        3.0,     # [Exp2] dari 2.5 → 3.0 (trailing lebih longgar)
+    'trail_atr_mult_trending': 3.5,   # [Exp2] dari 3.0 → 3.5
+    'trail_activation_r':    1.5,     # [Exp2] dari 1.0 → 1.5 (trailing baru aktif setelah 1.5R)
+    'target_atr_mult':       3.0,     # [Exp2] dari 2.0 → 3.0 (target lebih jauh, let profit run)
+    'target_rr_partial':     2.0,     # [Exp2] dari 1.5 → 2.0 (TP1 di 2R)
+    'max_holding_bars':      60,      # [Exp2] dari 40 → 60 (hold lebih lama)
+    'min_profit_pct':        2.0,     # [Exp2] dari 1.0 → 2.0 (time exit hanya kalau belum profit 2%)
+    'gap_buffer_pct':        0.5,     # [Exp2] dari 0.3 → 0.5
+}
 
 # =============================================================================
 # LOGGING
@@ -166,7 +185,7 @@ def load_ihsg(conn) -> Optional[pd.DataFrame]:
 # 2. COMPUTE SIGNALS (ENGINE REAL)
 # =============================================================================
 
-def compute_signals_real(df: pd.DataFrame, ticker: str, ihsg_data) -> pd.DataFrame:
+def compute_signals_real(df: pd.DataFrame, ticker: str, ihsg_data, config: dict = None) -> pd.DataFrame:
     """
     HARUS pakai engine real. Tidak ada fallback.
     Kalau gagal, raise exception → saham di-skip.
@@ -174,7 +193,7 @@ def compute_signals_real(df: pd.DataFrame, ticker: str, ihsg_data) -> pd.DataFra
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from core.pixellent_signals import compute_signals
     ihsg = ihsg_data if ihsg_data is not None else pd.DataFrame()
-    return compute_signals(df, ihsg)
+    return compute_signals(df, ihsg, config)
 
 
 # =============================================================================
@@ -613,8 +632,10 @@ def feed_adaptive_learning(learner, orchestrator, ticker: str, trades: List[Trad
 def main():
     logger.info("=" * 70)
     logger.info("PIXELLENT BACKTEST v2.0 — REALISTIC ENGINE SIMULATION")
+    logger.info(f"Eksperimen       : {EXPERIMENT_NAME}")
     logger.info(f"Periode: {START_DATE} → {END_DATE}")
     logger.info(f"Agent Filter: {'ON (threshold={})'.format(AGENT_THRESHOLD) if USE_AGENT_FILTER else 'OFF'}")
+    logger.info(f"Signal Config: {SIGNAL_CONFIG}")
     logger.info("=" * 70)
 
     # Database
@@ -672,7 +693,7 @@ def main():
                 continue
 
             # Compute signals (REAL engine)
-            signal_df = compute_signals_real(df, ticker, ihsg_data)
+            signal_df = compute_signals_real(df, ticker, ihsg_data, SIGNAL_CONFIG)
             if signal_df.empty:
                 skipped += 1
                 continue
@@ -789,6 +810,7 @@ def main():
         logger.info("\n" + "=" * 70)
         logger.info("HASIL BACKTEST — REALISTIC ENGINE SIMULATION v2.0")
         logger.info("=" * 70)
+        logger.info(f"Eksperimen       : {EXPERIMENT_NAME}")
         logger.info(f"Agent Filter     : {'ON (>={AGENT_THRESHOLD})' if USE_AGENT_FILTER else 'OFF'}")
         logger.info(f"Saham diproses   : {len(per_stock_metrics)}")
         logger.info(f"Total trades     : {overall['n_trades']:,}")
