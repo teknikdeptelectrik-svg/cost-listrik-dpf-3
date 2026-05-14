@@ -231,7 +231,19 @@ SCORING_HEURISTIC_WEIGHTS = {
 }
 
 # =============================================================================
-# 9. ADAPTIVE LEARNING CONSTANTS
+# 9. TRADE FILTER THRESHOLDS — Optimasi #1 (target: ≥800 trades, WR ≥65%)
+# =============================================================================
+
+# ML Filter: probability threshold — signal diterima jika ml_prob >= ini
+# Sebelumnya 0.50 → hanya 541 trades/5yr. Turunkan untuk naikkan jumlah trade.
+ML_FILTER_THRESHOLD = 0.45   # [OPT1] dari 0.50 → 0.45
+
+# Agent Score: minimum composite score dari AgentOrchestrator
+# Sebelumnya 50 → hanya high-quality pass. Turunkan sedikit.
+AGENT_SCORE_THRESHOLD = 45   # [OPT1] dari 50 → 45
+
+# =============================================================================
+# 10. ADAPTIVE LEARNING CONSTANTS
 # =============================================================================
 
 ADAPTIVE_LEARNING = {
@@ -244,7 +256,7 @@ ADAPTIVE_LEARNING = {
 }
 
 # =============================================================================
-# 10. YFINANCE CACHE CONSTANTS
+# 11. YFINANCE CACHE CONSTANTS
 # =============================================================================
 
 YFINANCE_CACHE = {
@@ -255,7 +267,7 @@ YFINANCE_CACHE = {
 }
 
 # =============================================================================
-# 11. DATA QUALITY CONSTANTS
+# 12. DATA QUALITY CONSTANTS
 # =============================================================================
 
 MANDATORY_FIELDS = {
@@ -273,7 +285,7 @@ DATA_QUALITY_LEVELS = {
 }
 
 # =============================================================================
-# 12. KEY MAPPING — signal_row → agent input
+# 13. KEY MAPPING — signal_row → agent input
 # =============================================================================
 
 SIGNAL_TO_AGENT_MAP = {

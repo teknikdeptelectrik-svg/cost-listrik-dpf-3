@@ -55,7 +55,14 @@ END_DATE   = "2026-05-11"
 
 # Parameter backtest
 MIN_BARS        = 100
-AGENT_THRESHOLD = 50    # [Exp2] dari 40 → 50 (hanya signal high-quality)
+# Import thresholds from centralized constants
+try:
+    from core.constants import ML_FILTER_THRESHOLD, AGENT_SCORE_THRESHOLD
+except ImportError:
+    ML_FILTER_THRESHOLD = 0.45
+    AGENT_SCORE_THRESHOLD = 45
+
+AGENT_THRESHOLD = AGENT_SCORE_THRESHOLD  # [OPT1] dari 50 → 45 (dari constants)
 USE_AGENT_FILTER = True # True = pakai AI Agent filter, False = ambil semua buy_signal
 
 # AdaptiveLearning
@@ -63,14 +70,14 @@ AUTO_RETRAIN      = True
 APPLY_IMMEDIATELY = True
 
 # Output
-REPORT_PATH = "backtest_report_exp2.json"
+REPORT_PATH = "backtest_report_opt1.json"
 LOG_PATH    = "data/logs/backtest.log"
 
 # =============================================================================
 # EXPERIMENT CONFIG — Override engine parameters
 # =============================================================================
 # Exp2: Lebih longgar, beri ruang napas, let profit run
-EXPERIMENT_NAME = "Exp2 — stop=7%, ftt_buffer=3%, target=3xATR, threshold=50"
+EXPERIMENT_NAME = "Exp3-OPT1 — ML_thresh=0.45, agent_thresh=45, target trades≥800"
 
 SIGNAL_CONFIG = {
     'stop_pct':              7.0,     # [Exp2] dari 5% → 7% (lebih longgar)
@@ -375,7 +382,7 @@ def simulate_trades(
                         ml_feat = build_ml_features(signal_df)
                         row_feat = ml_feat.iloc[i:i+1][_ML_FEATURES].fillna(0)
                         ml_prob = _ML_MODEL.predict_proba(row_feat)[0][1]
-                        if ml_prob < 0.5:  # ML says < 50% chance of profit → SKIP
+                        if ml_prob < ML_FILTER_THRESHOLD:  # [OPT1] dari 0.5 → 0.45 (dari constants)
                             continue
                     except Exception:
                         pass  # ML filter optional, don't block if error

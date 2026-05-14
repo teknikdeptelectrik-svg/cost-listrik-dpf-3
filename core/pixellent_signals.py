@@ -443,18 +443,20 @@ def compute_signals(df: pd.DataFrame,
 
     # ══════════════════════════════════════════
     # FOLLOW THE TREND BUY SIGNAL (PRIMARY — for WR80%)
+    # [OPT1] Dilonggarkan untuk naikkan jumlah trade:
+    #   - hhhl_pattern → hl_recent (Higher Low cukup, tidak perlu HH juga)
+    #   - ~sideways_arr dihapus (ma_triple_align sudah proteksi; sideways dgn MA align masih valid)
     # ══════════════════════════════════════════
     buy_ftt = (
         candle_above_ma20 &       # CANDLE > MA20
         ma_triple_align &          # MA20 > MA50 > MA100
         golden_cross_active &      # EMA8 > SMA20 (golden cross active)
         pullback_entry &           # TUNGGU KOREKSI ke EMA8/SMA20
-        hhhl_pattern &             # HHHL confirmed
+        hl_recent &                # [OPT1] Higher Low confirmed (dari hhhl_pattern)
         bullish_candle &           # Candle rebound (hijau)
         vol_ok_ftt &               # Volume minimal ada
         likuid &                   # Likuid
-        regime_ok &                # Not HIGH_VOL
-        ~sideways_arr              # Not sideways
+        regime_ok                  # Not HIGH_VOL (sideways now allowed if MA aligned)
     )
 
     # ══════════════════════════════════════════
@@ -466,7 +468,7 @@ def compute_signals(df: pd.DataFrame,
         (c > hma5) & vol_doji &
         ema_ok & hh_ok & ta_ok & az_ok &
         filter_fractal & filter_nf &
-        regime_ok & ~sideways_arr
+        regime_ok                  # [OPT1] ~sideways_arr dihapus (di FTT mode, sudah di-gate oleh ma_triple_align)
     )
     buy_bullish = (
         ac_naik & likuid & ihsg_up &
