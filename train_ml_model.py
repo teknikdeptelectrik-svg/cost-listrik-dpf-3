@@ -251,19 +251,35 @@ def build_ml_features(signal_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =============================================================================
-# 3. LABEL GENERATION
+# 3. LABEL GENERATION — REALISTIC (matches backtest exit logic)
 # =============================================================================
 
 def generate_labels(signal_df: pd.DataFrame, target_pct: float = 2.0, max_bars: int = 15) -> pd.Series:
     """
-    For each buy_signal bar, look forward max_bars bars.
-    Label = 1 if max gain >= target_pct%, else 0.
-    NaN for non-buy-signal bars.
+    For each buy_signal bar, simulate REALISTIC exit logic (same as backtest).
+    
+    Label = 1 if trade would be PROFITABLE after exit
+    Label = 0 if trade would be a LOSS after exit
+    
+    Exit logic (same priority as backtest):
+    1. High >= target → WIN (TARGET_HIT)
+    2. Low <= stop → LOSS (STOP_HIT) 
+    3. sell_signal → check profit/loss
+    4. After max_bars → check profit/loss (TIME_EXIT)
+    
+    This ensures ML model learns the SAME definition of win/loss as backtest.
     """
     c = signal_df['close']
     h = signal_df['high']
+    l = signal_df['low']
     o = signal_df['open']
     buy = signal_df.get('buy_signal', pd.Series(False, index=c.index))
+    sell = signal_df.get('sell_signal', pd.Series(False, index=c.index))
+    
+    # Stop & target from engine
+    hard_stop = signal_df.get('hard_stop_final', pd.Series(0, index=c.index))
+    target = signal_df.get('target_final', pd.Series(np.inf, index=c.index))
+    stop_aktif = signal_df.get('stop_aktif', hard_stop)
 
     labels = pd.Series(np.nan, index=c.index)
     buy_indices = c.index[buy.astype(bool)]
@@ -271,21 +287,49 @@ def generate_labels(signal_df: pd.DataFrame, target_pct: float = 2.0, max_bars: 
     for idx in buy_indices:
         pos = c.index.get_loc(idx)
 
-        # Entry = next bar open (realistic)
+        # Entry = next bar open (realistic, same as backtest)
         if pos + 1 >= len(c):
             continue
         entry_price = o.iloc[pos + 1]
-
-        # Forward window
-        start_pos = pos + 1
-        end_pos = min(pos + max_bars + 1, len(c))
-        future_high = h.iloc[start_pos:end_pos]
-
-        if len(future_high) == 0:
+        if entry_price <= 0:
             continue
 
-        max_gain = (future_high.max() - entry_price) / entry_price * 100
-        labels.loc[idx] = 1.0 if max_gain >= target_pct else 0.0
+        # Get stop and target locked at buy time (same as backtest)
+        locked_stop = stop_aktif.iloc[pos] if stop_aktif.iloc[pos] > 0 else entry_price * 0.93
+        locked_target = target.iloc[pos] if target.iloc[pos] > 0 and target.iloc[pos] < entry_price * 2 else entry_price * (1 + target_pct / 100)
+
+        # Simulate bar-by-bar exit (same priority as backtest)
+        exit_return = None
+        start_pos = pos + 1
+        end_pos = min(pos + max_bars + 1, len(c))
+
+        for bar in range(start_pos, end_pos):
+            bar_h = h.iloc[bar]
+            bar_l = l.iloc[bar]
+            bar_c = c.iloc[bar]
+
+            # Priority 1: Target hit (check high first)
+            if bar_h >= locked_target:
+                exit_return = (locked_target - entry_price) / entry_price * 100
+                break
+
+            # Priority 2: Stop hit (check low)
+            if bar_l <= locked_stop:
+                exit_return = (locked_stop - entry_price) / entry_price * 100
+                break
+
+            # Priority 3: Sell signal from engine
+            if bar < len(sell) and sell.iloc[bar]:
+                exit_return = (bar_c - entry_price) / entry_price * 100
+                break
+
+        # If no exit triggered within window → use last close
+        if exit_return is None:
+            last_pos = min(end_pos - 1, len(c) - 1)
+            exit_return = (c.iloc[last_pos] - entry_price) / entry_price * 100
+
+        # Label: 1 = profitable, 0 = loss
+        labels.loc[idx] = 1.0 if exit_return > 0 else 0.0
 
     return labels
 
