@@ -63,26 +63,26 @@ AUTO_RETRAIN      = True
 APPLY_IMMEDIATELY = True
 
 # Output
-REPORT_PATH = "backtest_report_exp2.json"
+REPORT_PATH = "backtest_report_exp3.json"
 LOG_PATH    = "data/logs/backtest.log"
 
 # =============================================================================
 # EXPERIMENT CONFIG — Override engine parameters
 # =============================================================================
-# Exp2: Lebih longgar, beri ruang napas, let profit run
-EXPERIMENT_NAME = "Exp2 — stop=7%, ftt_buffer=3%, target=3xATR, threshold=50"
+# Exp3: Baseline Exp1 params + ML filter yang sudah benar + guards
+EXPERIMENT_NAME = "Exp3 — baseline params + ML fixed + entry guards"
 
 SIGNAL_CONFIG = {
-    'stop_pct':              7.0,     # [Exp2] dari 5% → 7% (lebih longgar)
-    'ftt_stop_buffer_pct':   3.0,     # [Exp2] dari 0.5% → 3.0% (SL = SMA20 - 3%)
-    'trail_atr_mult':        3.0,     # [Exp2] dari 2.5 → 3.0 (trailing lebih longgar)
-    'trail_atr_mult_trending': 3.5,   # [Exp2] dari 3.0 → 3.5
-    'trail_activation_r':    1.5,     # [Exp2] dari 1.0 → 1.5 (trailing baru aktif setelah 1.5R)
-    'target_atr_mult':       3.0,     # [Exp2] dari 2.0 → 3.0 (target lebih jauh, let profit run)
-    'target_rr_partial':     2.0,     # [Exp2] dari 1.5 → 2.0 (TP1 di 2R)
-    'max_holding_bars':      60,      # [Exp2] dari 40 → 60 (hold lebih lama)
-    'min_profit_pct':        2.0,     # [Exp2] dari 1.0 → 2.0 (time exit hanya kalau belum profit 2%)
-    'gap_buffer_pct':        0.5,     # [Exp2] dari 0.3 → 0.5
+    'stop_pct':              5.0,     # [Exp1 baseline]
+    'ftt_stop_buffer_pct':   1.5,     # [Exp1 baseline]
+    'trail_atr_mult':        2.5,     # [Exp1 baseline]
+    'trail_atr_mult_trending': 3.0,   # [Exp1 baseline]
+    'trail_activation_r':    1.0,     # [Exp1 baseline]
+    'target_atr_mult':       2.0,     # [Exp1 baseline — proven 17% hit rate]
+    'target_rr_partial':     1.5,     # [Exp1 baseline]
+    'max_holding_bars':      40,      # [Exp1 baseline]
+    'min_profit_pct':        1.0,     # [Exp1 baseline]
+    'gap_buffer_pct':        0.3,     # [Exp1 baseline]
 }
 
 # =============================================================================
@@ -380,12 +380,27 @@ def simulate_trades(
                     except Exception:
                         pass  # ML filter optional, don't block if error
 
+                # [FIX] Guard: skip if entry_price invalid (penny stocks / zero)
+                if entry_price <= 0 or np.isnan(entry_price):
+                    continue
+
                 # Ambil target & stop yang dikunci saat buy
                 locked_target = target.iloc[i] if target.iloc[i] > 0 else entry_price * 1.05
-                locked_hard_stop = hard_stop.iloc[i] if hard_stop.iloc[i] > 0 else entry_price * 0.947
+                locked_hard_stop = hard_stop.iloc[i] if hard_stop.iloc[i] > 0 else entry_price * 0.93
+
+                # [FIX] Enforce minimum target floor: at least 5% above entry
+                min_target = entry_price * 1.05
+                if locked_target < min_target:
+                    locked_target = min_target
+
+                # [FIX] Enforce stop sanity: stop must be below entry
+                if locked_hard_stop >= entry_price:
+                    locked_hard_stop = entry_price * 0.93
 
                 # [FIX-WR] 1R = risiko awal (entry - hard_stop)
                 risk_1r = entry_price - locked_hard_stop
+                if risk_1r <= 0:
+                    risk_1r = entry_price * 0.05  # fallback 5% risk
                 locked_stop = locked_hard_stop  # mulai dari hard_stop, trailing delayed
 
                 # [FIX-WR] Tracking state untuk hybrid exit
@@ -526,8 +541,14 @@ def compute_metrics(trades: List[Trade]) -> Dict[str, Any]:
     wins = [t for t in trades if t.is_win]
     losses = [t for t in trades if not t.is_win]
     returns = [t.return_pct for t in trades]
-    win_returns = [t.return_pct for t in wins]
-    loss_returns = [t.return_pct for t in losses]
+
+    # [FIX] Remove NaN/inf values from returns
+    returns = [r for r in returns if np.isfinite(r)]
+    if not returns:
+        return {"n_trades": n, "error": "all returns are NaN/inf"}
+
+    win_returns = [r for r in returns if r > 0]
+    loss_returns = [r for r in returns if r <= 0]
 
     gross_profit = sum(r for r in returns if r > 0)
     gross_loss = abs(sum(r for r in returns if r <= 0))
@@ -542,15 +563,15 @@ def compute_metrics(trades: List[Trade]) -> Dict[str, Any]:
         "n_wins": len(wins),
         "n_losses": len(losses),
         "win_rate": len(wins) / n,
-        "avg_return_pct": np.mean(returns),
-        "median_return_pct": np.median(returns),
+        "avg_return_pct": float(np.mean(returns)),
+        "median_return_pct": float(np.median(returns)),
         "total_return_pct": sum(returns),
-        "avg_win_pct": np.mean(win_returns) if win_returns else 0,
-        "avg_loss_pct": np.mean(loss_returns) if loss_returns else 0,
+        "avg_win_pct": float(np.mean(win_returns)) if win_returns else 0,
+        "avg_loss_pct": float(np.mean(loss_returns)) if loss_returns else 0,
         "max_win_pct": max(returns) if returns else 0,
         "max_loss_pct": min(returns) if returns else 0,
         "profit_factor": gross_profit / max(gross_loss, 0.01),
-        "avg_bars_held": np.mean([t.bars_held for t in trades]),
+        "avg_bars_held": float(np.mean([t.bars_held for t in trades])),
         "exit_reasons": exit_reasons,
     }
 
