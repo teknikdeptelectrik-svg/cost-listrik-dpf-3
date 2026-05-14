@@ -70,11 +70,11 @@ LOG_PATH    = "data/logs/backtest.log"
 # EXPERIMENT CONFIG — Override engine parameters
 # =============================================================================
 # Exp2: Lebih longgar, beri ruang napas, let profit run
-EXPERIMENT_NAME = "Exp2 — stop=7%, ftt_buffer=1.5%, target=3xATR, threshold=50"
+EXPERIMENT_NAME = "Exp2 — stop=7%, ftt_buffer=3%, target=3xATR, threshold=50"
 
 SIGNAL_CONFIG = {
     'stop_pct':              7.0,     # [Exp2] dari 5% → 7% (lebih longgar)
-    'ftt_stop_buffer_pct':   1.5,     # [Exp2] dari 0.5% → 1.5% (SL = SMA20 - 1.5%)
+    'ftt_stop_buffer_pct':   3.0,     # [Exp2] dari 0.5% → 3.0% (SL = SMA20 - 3%)
     'trail_atr_mult':        3.0,     # [Exp2] dari 2.5 → 3.0 (trailing lebih longgar)
     'trail_atr_mult_trending': 3.5,   # [Exp2] dari 3.0 → 3.5
     'trail_activation_r':    1.5,     # [Exp2] dari 1.0 → 1.5 (trailing baru aktif setelah 1.5R)
