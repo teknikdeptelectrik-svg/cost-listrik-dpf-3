@@ -55,7 +55,7 @@ END_DATE   = "2026-05-11"
 
 # Parameter backtest
 MIN_BARS        = 100
-AGENT_THRESHOLD = 40    # [WR80] dari 45 → 40 (FTT signals sudah high-quality, less filter needed)
+AGENT_THRESHOLD = 50    # [Exp2] dari 40 → 50 (hanya signal high-quality)
 USE_AGENT_FILTER = True # True = pakai AI Agent filter, False = ambil semua buy_signal
 
 # AdaptiveLearning
@@ -63,8 +63,27 @@ AUTO_RETRAIN      = True
 APPLY_IMMEDIATELY = True
 
 # Output
-REPORT_PATH = "backtest_report.json"
+REPORT_PATH = "backtest_report_exp2.json"
 LOG_PATH    = "data/logs/backtest.log"
+
+# =============================================================================
+# EXPERIMENT CONFIG — Override engine parameters
+# =============================================================================
+# Exp2: Lebih longgar, beri ruang napas, let profit run
+EXPERIMENT_NAME = "Exp2 — stop=7%, ftt_buffer=3%, target=3xATR, threshold=50"
+
+SIGNAL_CONFIG = {
+    'stop_pct':              7.0,     # [Exp2] dari 5% → 7% (lebih longgar)
+    'ftt_stop_buffer_pct':   3.0,     # [Exp2] dari 0.5% → 3.0% (SL = SMA20 - 3%)
+    'trail_atr_mult':        3.0,     # [Exp2] dari 2.5 → 3.0 (trailing lebih longgar)
+    'trail_atr_mult_trending': 3.5,   # [Exp2] dari 3.0 → 3.5
+    'trail_activation_r':    1.5,     # [Exp2] dari 1.0 → 1.5 (trailing baru aktif setelah 1.5R)
+    'target_atr_mult':       3.0,     # [Exp2] dari 2.0 → 3.0 (target lebih jauh, let profit run)
+    'target_rr_partial':     2.0,     # [Exp2] dari 1.5 → 2.0 (TP1 di 2R)
+    'max_holding_bars':      60,      # [Exp2] dari 40 → 60 (hold lebih lama)
+    'min_profit_pct':        2.0,     # [Exp2] dari 1.0 → 2.0 (time exit hanya kalau belum profit 2%)
+    'gap_buffer_pct':        0.5,     # [Exp2] dari 0.3 → 0.5
+}
 
 # =============================================================================
 # LOGGING
@@ -98,6 +117,9 @@ class Trade:
     bars_held: int = 0
     agent_score: float = 0.0
     agent_action: str = ""
+    agent_scores: Dict[str, float] = field(default_factory=dict)  # Per-agent scores from orchestrator
+    agent_confidence: float = 0.0
+    agent_risk_level: str = "MEDIUM"
     is_win: bool = False
 
 
@@ -163,7 +185,7 @@ def load_ihsg(conn) -> Optional[pd.DataFrame]:
 # 2. COMPUTE SIGNALS (ENGINE REAL)
 # =============================================================================
 
-def compute_signals_real(df: pd.DataFrame, ticker: str, ihsg_data) -> pd.DataFrame:
+def compute_signals_real(df: pd.DataFrame, ticker: str, ihsg_data, config: dict = None) -> pd.DataFrame:
     """
     HARUS pakai engine real. Tidak ada fallback.
     Kalau gagal, raise exception → saham di-skip.
@@ -171,7 +193,7 @@ def compute_signals_real(df: pd.DataFrame, ticker: str, ihsg_data) -> pd.DataFra
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from core.pixellent_signals import compute_signals
     ihsg = ihsg_data if ihsg_data is not None else pd.DataFrame()
-    return compute_signals(df, ihsg)
+    return compute_signals(df, ihsg, config)
 
 
 # =============================================================================
@@ -261,9 +283,10 @@ def run_agent_scoring(signal_row: pd.Series, ticker: str, orchestrator) -> Dict[
             "action": md.action,
             "confidence": md.confidence,
             "risk_level": md.risk_level,
+            "agent_scores": md.agent_scores,  # Actual per-agent scores
         }
     except Exception:
-        return {"score": 50.0, "action": "HOLD", "confidence": 0.0, "risk_level": "MEDIUM"}
+        return {"score": 50.0, "action": "HOLD", "confidence": 0.0, "risk_level": "MEDIUM", "agent_scores": {}}
 
 
 # =============================================================================
@@ -330,10 +353,16 @@ def simulate_trades(
                 # AI Agent filter
                 agent_score = 0.0
                 agent_action = "N/A"
+                agent_scores_dict = {}
+                agent_confidence = 0.0
+                agent_risk_level = "MEDIUM"
                 if USE_AGENT_FILTER and orchestrator is not None:
                     result = run_agent_scoring(signal_df.iloc[i], ticker, orchestrator)
                     agent_score = result["score"]
                     agent_action = result["action"]
+                    agent_scores_dict = result.get("agent_scores", {})
+                    agent_confidence = result.get("confidence", 0.0)
+                    agent_risk_level = result.get("risk_level", "MEDIUM")
 
                     # SKIP kalau score di bawah threshold
                     if agent_score < AGENT_THRESHOLD:
@@ -370,6 +399,9 @@ def simulate_trades(
                     entry_price=entry_price,
                     agent_score=agent_score,
                     agent_action=agent_action,
+                    agent_scores=agent_scores_dict,
+                    agent_confidence=agent_confidence,
+                    agent_risk_level=agent_risk_level,
                 )
                 in_position = True
 
@@ -543,28 +575,37 @@ def compute_metrics(trades: List[Trade]) -> Dict[str, Any]:
 # =============================================================================
 
 def feed_adaptive_learning(learner, orchestrator, ticker: str, trades: List[Trade]):
-    """Feed trade results ke AdaptiveLearning untuk update bobot agent."""
+    """
+    Feed trade results ke AdaptiveLearning untuk update bobot agent.
+    
+    FIXED: Now passes ACTUAL per-agent scores (from orchestrator run during
+    simulate_trades) instead of fabricated approximations.
+    
+    Flow:
+        Backtest selesai → feed_adaptive_learning() per saham
+        → record ke agent_decisions.json (DENGAN agent_scores REAL)
+        → 20 outcomes → auto retrain
+        → bobot update di agent_weights.json
+        → next run pakai bobot baru
+    """
     try:
         from core.pixellent_agents import MasterDecision
 
         for trade in trades:
-            # Get agent scores by re-running scoring (if available)
-            agent_scores = {}
-            if orchestrator and trade.agent_score > 0:
-                # Use the master score distributed proportionally as approximation
-                agent_scores = {
-                    "TrendAgent": trade.agent_score * 1.1,       # Trend usually scores higher
-                    "SmartMoneyAgent": trade.agent_score * 0.95,
-                    "RiskAgent": trade.agent_score * 0.9,
-                    "MacroAgent": 50.0,                          # Macro always neutral (no data)
-                }
+            # Use ACTUAL agent_scores from orchestrator (stored during simulate_trades)
+            agent_scores = trade.agent_scores if trade.agent_scores else {}
+
+            # If agent_scores is empty (e.g., agent filter was off), skip recording
+            # since we can't learn without per-agent breakdown
+            if not agent_scores and trade.agent_score <= 0:
+                continue
 
             decision = MasterDecision(
                 ticker=ticker,
                 action=trade.agent_action if trade.agent_action != "N/A" else "BUY",
                 score=trade.agent_score,
-                confidence=min(trade.agent_score / 100, 1.0),
-                risk_level="MEDIUM",
+                confidence=trade.agent_confidence,
+                risk_level=trade.agent_risk_level,
                 position_size_modifier=1.0,
                 reasoning=f"Backtest {ticker} {trade.entry_date}",
                 conflicts=[],
@@ -591,8 +632,10 @@ def feed_adaptive_learning(learner, orchestrator, ticker: str, trades: List[Trad
 def main():
     logger.info("=" * 70)
     logger.info("PIXELLENT BACKTEST v2.0 — REALISTIC ENGINE SIMULATION")
+    logger.info(f"Eksperimen       : {EXPERIMENT_NAME}")
     logger.info(f"Periode: {START_DATE} → {END_DATE}")
     logger.info(f"Agent Filter: {'ON (threshold={})'.format(AGENT_THRESHOLD) if USE_AGENT_FILTER else 'OFF'}")
+    logger.info(f"Signal Config: {SIGNAL_CONFIG}")
     logger.info("=" * 70)
 
     # Database
@@ -610,7 +653,7 @@ def main():
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from core.pixellent_agents import AdaptiveLearning, AgentOrchestrator
         learner = AdaptiveLearning(
-            log_path="data/logs/adaptive_decisions.json",
+            log_path=AdaptiveLearning.DEFAULT_LOG_PATH,
             auto_retrain=AUTO_RETRAIN,
             apply_immediately=APPLY_IMMEDIATELY,
         )
@@ -650,7 +693,7 @@ def main():
                 continue
 
             # Compute signals (REAL engine)
-            signal_df = compute_signals_real(df, ticker, ihsg_data)
+            signal_df = compute_signals_real(df, ticker, ihsg_data, SIGNAL_CONFIG)
             if signal_df.empty:
                 skipped += 1
                 continue
@@ -691,7 +734,8 @@ def main():
     if learner and orchestrator:
         logger.info("\n--- AdaptiveLearning: Retrain ---")
         try:
-            new_weights = learner.retrain_if_needed(orchestrator)
+            # Force retrain: after full backtest we always have enough data
+            new_weights = learner.adjust_weights(orchestrator, learner.ROLLING_WINDOW)
             if new_weights:
                 logger.info("Bobot agent DIUPDATE:")
                 for agent, w in new_weights.items():
@@ -766,6 +810,7 @@ def main():
         logger.info("\n" + "=" * 70)
         logger.info("HASIL BACKTEST — REALISTIC ENGINE SIMULATION v2.0")
         logger.info("=" * 70)
+        logger.info(f"Eksperimen       : {EXPERIMENT_NAME}")
         logger.info(f"Agent Filter     : {'ON (>={AGENT_THRESHOLD})' if USE_AGENT_FILTER else 'OFF'}")
         logger.info(f"Saham diproses   : {len(per_stock_metrics)}")
         logger.info(f"Total trades     : {overall['n_trades']:,}")

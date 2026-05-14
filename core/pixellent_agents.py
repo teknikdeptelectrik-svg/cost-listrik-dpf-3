@@ -1267,12 +1267,17 @@ class AgentOrchestrator:
             combined.update(macro_data)
         if "macro_score" not in combined:
             try:
-                from modules.pixellent_macro import compute_macro_score
-                macro_result = compute_macro_score()
-                combined["macro_score"] = macro_result.get("macro_score", 50.0)
-                logger.info(f"MacroAgent: computed macro_score={combined['macro_score']:.1f} via fallback")
+                from modules.pixellent_news_sentiment import compute_news_macro_score
+                combined["macro_score"] = compute_news_macro_score()
+                logger.info(f"MacroAgent: computed macro_score={combined['macro_score']:.1f} via news sentiment")
             except (ImportError, Exception):
-                combined["macro_score"] = 50.0
+                try:
+                    from modules.pixellent_macro import compute_macro_score
+                    macro_result = compute_macro_score()
+                    combined["macro_score"] = macro_result.get("macro_score", 50.0)
+                    logger.info(f"MacroAgent: computed macro_score={combined['macro_score']:.1f} via macro module")
+                except (ImportError, Exception):
+                    combined["macro_score"] = 50.0
         if sentiment_data:
             combined["sentiment_score"] = sentiment_data.get("sentiment_score", 50.0)
         return combined
