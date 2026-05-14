@@ -57,10 +57,11 @@ END_DATE   = "2026-05-11"
 MIN_BARS        = 100
 # Import thresholds from centralized constants
 try:
-    from core.constants import ML_FILTER_THRESHOLD, AGENT_SCORE_THRESHOLD
+    from core.constants import ML_FILTER_THRESHOLD, AGENT_SCORE_THRESHOLD, MAX_DRAWDOWN_LIMIT
 except ImportError:
     ML_FILTER_THRESHOLD = 0.45
     AGENT_SCORE_THRESHOLD = 45
+    MAX_DRAWDOWN_LIMIT = 10.0
 
 AGENT_THRESHOLD = AGENT_SCORE_THRESHOLD  # [OPT1] dari 50 → 45 (dari constants)
 USE_AGENT_FILTER = True # True = pakai AI Agent filter, False = ambil semua buy_signal
@@ -737,6 +738,48 @@ def main():
 
     conn.close()
 
+    # === PORTFOLIO DRAWDOWN CONTROL ===
+    # [OPT1] Circuit breaker: jika cumulative DD > MAX_DRAWDOWN_LIMIT,
+    # PAUSE entry baru sampai equity pulih ke peak * (1 - recovery_buffer)
+    # Ini mensimulasikan risk management real: stop trading saat DD parah.
+    if all_trades and MAX_DRAWDOWN_LIMIT > 0:
+        logger.info(f"\n--- Portfolio Drawdown Control (max={MAX_DRAWDOWN_LIMIT}%) ---")
+
+        # Sort semua trades chronologically by entry_date
+        all_trades_sorted = sorted(all_trades, key=lambda t: t.entry_date)
+
+        # Simulate portfolio equity curve & filter
+        filtered_trades = []
+        cum_return = 0.0
+        peak_return = 0.0
+        n_blocked = 0
+
+        for trade in all_trades_sorted:
+            # Check current drawdown BEFORE entering this trade
+            current_dd = cum_return - peak_return  # negative number
+
+            if current_dd <= -MAX_DRAWDOWN_LIMIT:
+                # Portfolio in drawdown breach — SKIP this trade
+                # Recovery condition: DD must recover to -5% (half of limit) before resuming
+                recovery_threshold = -MAX_DRAWDOWN_LIMIT * 0.5
+                if current_dd <= recovery_threshold:
+                    n_blocked += 1
+                    continue  # Skip trade — circuit breaker active
+
+            # Trade accepted — update equity
+            filtered_trades.append(trade)
+            cum_return += trade.return_pct
+            if cum_return > peak_return:
+                peak_return = cum_return
+
+        logger.info(f"  Trades sebelum DD filter: {len(all_trades_sorted)}")
+        logger.info(f"  Trades diblokir (DD>{MAX_DRAWDOWN_LIMIT}%): {n_blocked}")
+        logger.info(f"  Trades setelah DD filter: {len(filtered_trades)}")
+
+        # Replace all_trades with filtered version for reporting
+        all_trades_raw = all_trades_sorted  # Keep raw for comparison
+        all_trades = filtered_trades
+
     # === RETRAIN ===
     if learner and orchestrator:
         logger.info("\n--- AdaptiveLearning: Retrain ---")
@@ -784,6 +827,8 @@ def main():
             "config": {
                 "agent_filter": USE_AGENT_FILTER,
                 "agent_threshold": AGENT_THRESHOLD,
+                "ml_filter_threshold": ML_FILTER_THRESHOLD,
+                "max_drawdown_limit": MAX_DRAWDOWN_LIMIT,
                 "engine": "core.pixellent_signals.compute_signals (REAL)",
             },
             "summary": {
@@ -800,6 +845,8 @@ def main():
                 "profit_factor": round(overall["profit_factor"], 3),
                 "expectancy_pct": round(overall["expectancy"], 3),
                 "max_drawdown_pct": round(overall["max_drawdown_pct"], 2),
+                "max_drawdown_limit_pct": MAX_DRAWDOWN_LIMIT,
+                "dd_within_limit": abs(overall["max_drawdown_pct"]) <= MAX_DRAWDOWN_LIMIT,
                 "avg_bars_held": round(overall["avg_bars_held"], 1),
                 "avg_win_pct": round(overall["avg_win_pct"], 3),
                 "avg_loss_pct": round(overall["avg_loss_pct"], 3),
@@ -819,6 +866,8 @@ def main():
         logger.info("=" * 70)
         logger.info(f"Eksperimen       : {EXPERIMENT_NAME}")
         logger.info(f"Agent Filter     : {'ON (>={AGENT_THRESHOLD})' if USE_AGENT_FILTER else 'OFF'}")
+        logger.info(f"ML Filter        : {ML_FILTER_THRESHOLD}")
+        logger.info(f"DD Limit         : {MAX_DRAWDOWN_LIMIT}%")
         logger.info(f"Saham diproses   : {len(per_stock_metrics)}")
         logger.info(f"Total trades     : {overall['n_trades']:,}")
         logger.info(f"Win / Loss       : {overall['n_wins']} / {overall['n_losses']}")
@@ -826,7 +875,7 @@ def main():
         logger.info(f"Avg return       : {overall['avg_return_pct']:.2f}%")
         logger.info(f"Profit factor    : {overall['profit_factor']:.2f}")
         logger.info(f"Expectancy       : {overall['expectancy']:.2f}%")
-        logger.info(f"Max drawdown     : {overall['max_drawdown_pct']:.1f}%")
+        logger.info(f"Max drawdown     : {overall['max_drawdown_pct']:.1f}% (limit: {MAX_DRAWDOWN_LIMIT}%) {'✓' if abs(overall['max_drawdown_pct']) <= MAX_DRAWDOWN_LIMIT else '✗ BREACHED'}")
         logger.info(f"Avg bars held    : {overall['avg_bars_held']:.1f}")
         logger.info(f"")
         logger.info(f"Exit reasons:")

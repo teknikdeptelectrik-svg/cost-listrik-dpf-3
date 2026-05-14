@@ -242,6 +242,10 @@ ML_FILTER_THRESHOLD = 0.45   # [OPT1] dari 0.50 → 0.45
 # Sebelumnya 50 → hanya high-quality pass. Turunkan sedikit.
 AGENT_SCORE_THRESHOLD = 45   # [OPT1] dari 50 → 45
 
+# Max Drawdown Limit: portfolio-level circuit breaker
+# Jika cumulative drawdown melebihi ini, PAUSE entry baru sampai recovery.
+MAX_DRAWDOWN_LIMIT = 10.0    # Maksimal -10% drawdown portfolio
+
 # =============================================================================
 # 10. ADAPTIVE LEARNING CONSTANTS
 # =============================================================================
