@@ -183,6 +183,8 @@ def load_ihsg(conn) -> Optional[pd.DataFrame]:
                 # Force Decimal → float (PostgreSQL returns Decimal)
                 for col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+                # [FIX] Add has_hl flag so detect_regime() uses real H/L
+                df['has_hl'] = True
                 return df
     except Exception as e:
         logger.warning(f"IHSG load failed: {e}")
@@ -343,6 +345,9 @@ def simulate_trades(
     TP1_R = 1.5                # Partial profit di 1.5R
     PARTIAL_PCT = 0.5          # 50% posisi keluar di TP1
 
+    # [FIX] Trading fee: beli 0.15% + jual 0.25% = total 0.40% round-trip
+    TRADING_FEE_PCT = 0.40
+
     for i in range(len(signal_df)):
         idx = signal_df.index[i]
         c = close.iloc[i]
@@ -357,6 +362,10 @@ def simulate_trades(
                     continue
                 entry_price = open_price.iloc[i + 1]
                 entry_date = signal_df.index[i + 1]
+
+                # [FIX] Guard: skip jika entry_price invalid (0, NaN, negative)
+                if not entry_price or entry_price <= 0 or np.isnan(entry_price):
+                    continue
 
                 # AI Agent filter
                 agent_score = 0.0
@@ -456,9 +465,9 @@ def simulate_trades(
                 current_trade.exit_date = idx
                 current_trade.exit_price = locked_target
                 current_trade.exit_reason = "TARGET_HIT"
-                current_trade.return_pct = (locked_target - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (locked_target - current_trade.entry_price) / current_trade.entry_price * 100 - TRADING_FEE_PCT
                 current_trade.bars_held = bars_held
-                current_trade.is_win = True
+                current_trade.is_win = current_trade.return_pct > 0
                 trades.append(current_trade)
                 in_position = False
                 current_trade = None
@@ -469,14 +478,14 @@ def simulate_trades(
                 current_trade.exit_date = idx
                 current_trade.exit_price = locked_stop
                 current_trade.exit_reason = "STOP_HIT"
-                current_trade.return_pct = (locked_stop - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (locked_stop - current_trade.entry_price) / current_trade.entry_price * 100 - TRADING_FEE_PCT
                 current_trade.bars_held = bars_held
                 # [FIX-WR] Jika TP1 sudah hit, hasilnya adalah blend:
                 # 50% di TP1 + 50% di stop (bisa breakeven atau profit)
                 if tp1_hit:
                     tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
                     stop_return = (locked_stop - current_trade.entry_price) / current_trade.entry_price * 100
-                    current_trade.return_pct = tp1_return * PARTIAL_PCT + stop_return * (1 - PARTIAL_PCT)
+                    current_trade.return_pct = tp1_return * PARTIAL_PCT + stop_return * (1 - PARTIAL_PCT) - TRADING_FEE_PCT
                     current_trade.exit_reason = "PARTIAL_TP+TRAIL_STOP"
                 current_trade.is_win = current_trade.return_pct > 0
                 trades.append(current_trade)
@@ -489,12 +498,12 @@ def simulate_trades(
                 current_trade.exit_date = idx
                 current_trade.exit_price = c
                 current_trade.exit_reason = "SELL_SIGNAL"
-                current_trade.return_pct = (c - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (c - current_trade.entry_price) / current_trade.entry_price * 100 - TRADING_FEE_PCT
                 # [FIX-WR] Blend jika TP1 sudah hit
                 if tp1_hit:
                     tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
                     sell_return = (c - current_trade.entry_price) / current_trade.entry_price * 100
-                    current_trade.return_pct = tp1_return * PARTIAL_PCT + sell_return * (1 - PARTIAL_PCT)
+                    current_trade.return_pct = tp1_return * PARTIAL_PCT + sell_return * (1 - PARTIAL_PCT) - TRADING_FEE_PCT
                     current_trade.exit_reason = "PARTIAL_TP+SELL_SIGNAL"
                 current_trade.bars_held = bars_held
                 current_trade.is_win = current_trade.return_pct > 0
@@ -509,11 +518,11 @@ def simulate_trades(
         current_trade.exit_date = signal_df.index[-1]
         current_trade.exit_price = last_close
         current_trade.exit_reason = "END_OF_DATA"
-        current_trade.return_pct = (last_close - current_trade.entry_price) / current_trade.entry_price * 100
+        current_trade.return_pct = (last_close - current_trade.entry_price) / current_trade.entry_price * 100 - TRADING_FEE_PCT
         if tp1_hit:
             tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
             end_return = (last_close - current_trade.entry_price) / current_trade.entry_price * 100
-            current_trade.return_pct = tp1_return * PARTIAL_PCT + end_return * (1 - PARTIAL_PCT)
+            current_trade.return_pct = tp1_return * PARTIAL_PCT + end_return * (1 - PARTIAL_PCT) - TRADING_FEE_PCT
         current_trade.bars_held = len(signal_df) - signal_df.index.get_loc(current_trade.entry_date)
         current_trade.is_win = current_trade.return_pct > 0
         trades.append(current_trade)
@@ -530,10 +539,15 @@ def compute_metrics(trades: List[Trade]) -> Dict[str, Any]:
     if not trades:
         return {}
 
-    n = len(trades)
-    wins = [t for t in trades if t.is_win]
-    losses = [t for t in trades if not t.is_win]
-    returns = [t.return_pct for t in trades]
+    # [FIX] Filter out trades with NaN returns (invalid entry/exit prices)
+    valid_trades = [t for t in trades if not np.isnan(t.return_pct)]
+    if not valid_trades:
+        return {"n_trades": 0, "error": "All trades have NaN returns"}
+
+    n = len(valid_trades)
+    wins = [t for t in valid_trades if t.is_win]
+    losses = [t for t in valid_trades if not t.is_win]
+    returns = [t.return_pct for t in valid_trades]
     win_returns = [t.return_pct for t in wins]
     loss_returns = [t.return_pct for t in losses]
 
@@ -542,7 +556,7 @@ def compute_metrics(trades: List[Trade]) -> Dict[str, Any]:
 
     # Exit reason breakdown
     exit_reasons = {}
-    for t in trades:
+    for t in valid_trades:
         exit_reasons[t.exit_reason] = exit_reasons.get(t.exit_reason, 0) + 1
 
     metrics = {
