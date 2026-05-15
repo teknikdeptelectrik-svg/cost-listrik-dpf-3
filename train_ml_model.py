@@ -312,9 +312,10 @@ def generate_labels(signal_df: pd.DataFrame, target_pct: float = 2.0, max_bars: 
         locked_stop = entry_price * (1 - (_stop_pct + _gap_buf) / 100)
 
         # Simulate bar-by-bar exit (same priority as backtest)
+        # NO time limit — hold sampai ada exit signal (target/stop/sell)
         exit_return = None
         start_pos = pos + 1
-        end_pos = min(pos + max_bars + 1, len(c))
+        end_pos = len(c)  # no limit, sama seperti backtest
 
         for bar in range(start_pos, end_pos):
             bar_h = h.iloc[bar]
