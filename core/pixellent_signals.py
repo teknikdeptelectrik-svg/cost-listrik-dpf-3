@@ -28,6 +28,9 @@ from modules.pixellent_indicators import (
     action_zone, rrg, up_fractal, down_fractal, tick_size
 )
 
+# [MTF] Multi-Timeframe Analysis
+from modules.pixellent_mtf import compute_mtf, get_mtf_filter
+
 
 # =============================================================================
 # DEFAULT CONFIG
@@ -42,7 +45,7 @@ DEFAULT_CONFIG = {
     'trail_atr_mult':    2.5,            # [FIX-WR] dari 2.0 → 2.5 (trailing longgar)
     'trail_atr_mult_trending': 3.0,      # [FIX-WR] trailing saat TRENDING lebih longgar
     'trail_activation_r': 1.0,           # [FIX-WR] trailing baru aktif setelah profit >= 1R
-    'target_atr_mult':   2.0,
+    'target_atr_mult':   4.0,            # [FTT-TUNE] dari 2.0 → 4.0 (let profit run)
     'target_rr_partial': 1.5,            # [FIX-WR] TP1 partial di 1.5R
     'partial_exit_pct':  50,             # [FIX-WR] % posisi keluar di TP1
     'gap_buffer_pct':    0.3,            # [FIX-WR] dari 0.5 → 0.3
@@ -59,6 +62,8 @@ DEFAULT_CONFIG = {
     'rrg_mom_period':    3,
     'pakai_fractal':     0,   # [A6] 0=Off 1=On
     'pakai_nf':          0,   # [A6] 0=Off (Yahoo tidak ada NF data)
+    'mtf_enabled':       True, # [MTF] Multi-Timeframe confirmation aktif
+    'mtf_filter_mode':   'boost',  # [MTF] 'filter' = block sinyal, 'boost' = boost score saja
 }
 
 
@@ -500,7 +505,14 @@ def compute_signals(df: pd.DataFrame,
     # [WR80] Sell saat close < SMA20 (breakdown structure — identik setup user)
     sell_below_sma20 = (c < ma21) & (c.shift(1) >= ma21.shift(1))  # break down MA20
 
-    sell_raw_base  = sell_breakdown | sell_ha_hma | sell_vol_spike | sell_below_sma20
+    # [FTT-TUNE] Di FTT mode, DISABLE sell_below_sma20 sebagai exit signal.
+    # Alasan: target 4x ATR butuh ruang napas — 62% exit via SELL_SIGNAL terlalu cepat.
+    # Trailing stop & hard stop tetap aktif sebagai safety net.
+    # Di non-FTT mode, sell_below_sma20 tetap aktif (backward compat).
+    if cfg.get('ftt_mode', True):
+        sell_raw_base = sell_breakdown | sell_ha_hma | sell_vol_spike
+    else:
+        sell_raw_base = sell_breakdown | sell_ha_hma | sell_vol_spike | sell_below_sma20
 
     # ──────────────────────────────────────────
     # PASS 1 — ExRem(BuyRaw, SellRawBase)
@@ -771,6 +783,41 @@ def compute_signals(df: pd.DataFrame,
     ac_rel  = ac / c.replace(0, np.nan)
     rsi_s   = _rsi(c, 14)
     score   = rsi_s * 0.6 + ac_rel * 100 * 0.4
+
+    # ── [MTF] Multi-Timeframe Analysis ──
+    mtf_data = {}
+    if cfg.get('mtf_enabled', True):
+        try:
+            mtf_data = get_mtf_filter(df, config=None)
+            # Boost score berdasarkan MTF alignment
+            score = score * mtf_data['mtf_boost']
+            logger.info(f"MTF active: bullish={mtf_data['mtf_bullish'].iloc[-1]}, "
+                        f"score={mtf_data['mtf_score'].iloc[-1]:.1f}")
+        except Exception as e:
+            logger.warning(f"MTF computation failed: {e}, using neutral")
+            mtf_data = {
+                'mtf_bullish': pd.Series(False, index=c.index),
+                'mtf_confirmation': pd.Series(0, index=c.index),
+                'mtf_score': pd.Series(50.0, index=c.index),
+                'mtf_signal': pd.Series('NEUTRAL', index=c.index),
+                'mtf_boost': pd.Series(1.0, index=c.index),
+                'weekly_trend_up': pd.Series(False, index=c.index),
+                'monthly_trend_up': pd.Series(False, index=c.index),
+                'weekly_trend_score': pd.Series(50.0, index=c.index),
+                'monthly_trend_score': pd.Series(50.0, index=c.index),
+            }
+    else:
+        mtf_data = {
+            'mtf_bullish': pd.Series(False, index=c.index),
+            'mtf_confirmation': pd.Series(0, index=c.index),
+            'mtf_score': pd.Series(50.0, index=c.index),
+            'mtf_signal': pd.Series('NEUTRAL', index=c.index),
+            'mtf_boost': pd.Series(1.0, index=c.index),
+            'weekly_trend_up': pd.Series(False, index=c.index),
+            'monthly_trend_up': pd.Series(False, index=c.index),
+            'weekly_trend_score': pd.Series(50.0, index=c.index),
+            'monthly_trend_score': pd.Series(50.0, index=c.index),
+        }
     risk_e  = buy_price_final - hard_stop_final
     rew_e   = target_final    - buy_price_final
     rr_ratio= (rew_e / risk_e.replace(0, np.nan)).fillna(0)
@@ -834,6 +881,15 @@ def compute_signals(df: pd.DataFrame,
         'ff_score':        ff_score_s,       # ForeignFlow composite 0-100
         'ff_streak':       ff_streak_s,      # Consecutive net buy/sell days
         'ff_signal':       ff_signal_s,      # ForeignFlow categorical signal
+        # ── Multi-Timeframe (MTF) columns ──
+        'mtf_bullish':     mtf_data['mtf_bullish'],       # All TFs confirm uptrend
+        'mtf_score':       mtf_data['mtf_score'],         # MTF alignment score 0-100
+        'mtf_confirmation':mtf_data['mtf_confirmation'],  # 0/1/2 higher TF confirmations
+        'mtf_signal':      mtf_data['mtf_signal'],        # STRONG_BUY/BUY/NEUTRAL/SELL/STRONG_SELL
+        'weekly_trend_up': mtf_data['weekly_trend_up'],   # Weekly uptrend flag
+        'monthly_trend_up':mtf_data['monthly_trend_up'],  # Monthly uptrend flag
+        'weekly_trend_score': mtf_data['weekly_trend_score'],   # Weekly trend score 0-100
+        'monthly_trend_score':mtf_data['monthly_trend_score'],  # Monthly trend score 0-100
     })
 
 
@@ -920,6 +976,11 @@ def screen_all(tickers=None, config=None, start='2020-01-01') -> pd.DataFrame:
                 'Remarks':  _generate_remarks(last, cfg),
                 'IHSG_Up':  last['ihsg_up'],
                 'Likuid':   last['likuid'],
+                # MTF columns
+                'MTF':      last.get('mtf_signal', 'N/A'),
+                'MTF_Score':round(float(last.get('mtf_score', 50)), 1),
+                'W_Up':     last.get('weekly_trend_up', False),
+                'M_Up':     last.get('monthly_trend_up', False),
             })
         except Exception as e:
             logger.warning(f"  Skip {ticker}: {e}")

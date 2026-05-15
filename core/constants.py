@@ -169,7 +169,7 @@ DEFAULT_SIGNAL_CONFIG = {
     'trail_atr_mult': 2.5,              # Trailing multiplier (normal regime)
     'trail_atr_mult_trending': 3.0,      # Trailing saat TRENDING lebih longgar
     'trail_activation_r': 1.0,           # Trailing aktif setelah profit >= 1R
-    'target_atr_mult': 2.0,
+    'target_atr_mult': 4.0,             # [FTT-TUNE] dari 2.0 → 4.0 (let profit run)
     'target_rr_partial': 1.5,            # TP1 partial di 1.5R
     'partial_exit_pct': 50,              # % posisi keluar di TP1
     'gap_buffer_pct': 0.3,
@@ -186,6 +186,8 @@ DEFAULT_SIGNAL_CONFIG = {
     'rrg_mom_period': 3,
     'pakai_fractal': 0,
     'pakai_nf': 0,
+    'mtf_enabled': True,                 # [MTF] Multi-Timeframe confirmation aktif
+    'mtf_filter_mode': 'boost',          # [MTF] 'filter' = block sinyal, 'boost' = boost score
 }
 
 ENTRY_MODE_TREND_AGE_MIN = {0: 40, 1: 10, 2: 3}  # [FIX-WR] 1:20→10, 2:5→3
@@ -213,8 +215,40 @@ FTT_CONFIG = {
     'sl_below_ema8_pct': 0.003,          # SL alternatif = EMA8 - 0.3%
 
     # Exit Rules
-    'exit_on_close_below_sma20': True,   # Keluar jika close < SMA20
+    'exit_on_close_below_sma20': False,  # [FTT-TUNE] DISABLED — terlalu cepat exit (62% SELL_SIGNAL)
     'exit_on_ma_death_cross': True,      # Keluar jika EMA8 < SMA20 (death cross)
+    'target_atr_mult': 4.0,             # [FTT-TUNE] 4x ATR target (dari 2x)
+}
+
+# =============================================================================
+# 7c. MULTI-TIMEFRAME (MTF) CONSTANTS
+# =============================================================================
+
+MTF_CONFIG = {
+    # Weekly MA periods
+    'weekly_ma_fast': 8,                 # ~8 weeks = ~40 trading days
+    'weekly_ma_slow': 21,                # ~21 weeks = ~105 trading days
+
+    # Monthly MA periods
+    'monthly_ma_fast': 5,                # ~5 months
+    'monthly_ma_slow': 10,               # ~10 months
+
+    # Scoring weights
+    'weight_daily': 0.40,                # Daily trend weight
+    'weight_weekly': 0.35,               # Weekly trend weight
+    'weight_monthly': 0.25,              # Monthly trend weight
+
+    # Minimum data requirements
+    'min_weekly_bars': 21,               # ~21 weeks data minimum
+    'min_monthly_bars': 10,              # ~10 months data minimum
+}
+
+# MTF Signal thresholds
+MTF_SIGNAL_THRESHOLDS = {
+    'STRONG_BUY': 70,                    # All TFs bullish + score > 70
+    'BUY': 55,                           # Daily bullish + 1 higher TF + score > 55
+    'SELL': 45,                          # Daily bearish + weekly weak + score < 45
+    'STRONG_SELL': 30,                   # All TFs bearish + score < 30
 }
 
 # =============================================================================
