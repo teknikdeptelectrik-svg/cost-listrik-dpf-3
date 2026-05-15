@@ -423,9 +423,10 @@ def compute_signals(df: pd.DataFrame,
     pullback_entry = near_ema8 | near_sma20 | cross_sma20
 
     # ── [WR80] HHHL Pattern — Higher High Higher Low ──
-    # Swing high/low detection (5-bar)
-    swing_high = h.rolling(5, center=True).max() == h
-    swing_low  = l.rolling(5, center=True).min() == l
+    # Swing high/low detection (5-bar) — NO center=True (lookahead bias fix)
+    # Hanya lihat 5 bar ke BELAKANG, tidak lihat masa depan
+    swing_high = h.rolling(5).max() == h
+    swing_low  = l.rolling(5).min() == l
 
     # Higher High: current high > previous swing high
     prev_swing_h = h.where(swing_high).ffill()

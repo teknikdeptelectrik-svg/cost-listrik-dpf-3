@@ -53,6 +53,12 @@ TICKERS = []  # Kosong = semua saham
 START_DATE = "2020-01-02"
 END_DATE   = "2026-05-11"
 
+# Walk-Forward Validation (Fix overfitting)
+# IN_SAMPLE: 2020-2023 (tune parameters)
+# OUT_OF_SAMPLE: 2024-2026 (validate)
+WALK_FORWARD_SPLIT = "2024-01-01"  # Data sebelum ini = in-sample, sesudahnya = out-of-sample
+REPORT_OOS = True  # True = print separate in-sample vs out-of-sample metrics
+
 # Parameter backtest
 MIN_BARS        = 100
 AGENT_THRESHOLD = 50    # [Exp2] dari 40 → 50 (hanya signal high-quality)
@@ -769,6 +775,28 @@ def main():
 
     if all_trades:
         overall = compute_metrics(all_trades)
+
+        # Walk-Forward: Split trades into in-sample vs out-of-sample
+        oos_metrics = None
+        is_metrics = None
+        if REPORT_OOS and WALK_FORWARD_SPLIT:
+            split_date = pd.Timestamp(WALK_FORWARD_SPLIT)
+            is_trades = [t for t in all_trades if pd.Timestamp(t.entry_date) < split_date]
+            oos_trades = [t for t in all_trades if pd.Timestamp(t.entry_date) >= split_date]
+            if is_trades:
+                is_metrics = compute_metrics(is_trades)
+            if oos_trades:
+                oos_metrics = compute_metrics(oos_trades)
+            logger.info(f"\n--- WALK-FORWARD VALIDATION ---")
+            logger.info(f"Split date: {WALK_FORWARD_SPLIT}")
+            if is_metrics:
+                logger.info(f"IN-SAMPLE  (before {WALK_FORWARD_SPLIT}): {is_metrics['n_trades']} trades, WR={is_metrics['win_rate']*100:.1f}%")
+            if oos_metrics:
+                logger.info(f"OUT-OF-SAMPLE (after {WALK_FORWARD_SPLIT}): {oos_metrics['n_trades']} trades, WR={oos_metrics['win_rate']*100:.1f}%")
+            if is_metrics and oos_metrics:
+                wr_drop = (is_metrics['win_rate'] - oos_metrics['win_rate']) * 100
+                logger.info(f"WR DROP (overfit indicator): {wr_drop:.1f}pp {'⚠️ OVERFIT' if wr_drop > 10 else '✅ ROBUST'}")
+            logger.info("")
 
         # Exit reason summary
         exit_summary = overall.get("exit_reasons", {})

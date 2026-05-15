@@ -227,12 +227,12 @@ def build_ml_features(signal_df: pd.DataFrame) -> pd.DataFrame:
     # Distance to MA20 (pullback depth)
     feat['f_pullback_depth'] = ((c - ma21) / ma21.replace(0, np.nan) * 100).fillna(0).clip(-10, 10) / 10
 
-    # Higher High / Higher Low recent
-    swing_h = h.rolling(5, center=True).max() == h
+    # Higher High / Higher Low recent — NO center=True (lookahead bias fix)
+    swing_h = h.rolling(5).max() == h
     prev_sh = h.where(swing_h).ffill()
     feat['f_higher_high'] = (h > prev_sh.shift(1)).rolling(10).sum().fillna(0).clip(0, 5) / 5
 
-    swing_l = l.rolling(5, center=True).min() == l
+    swing_l = l.rolling(5).min() == l
     prev_sl = l.where(swing_l).ffill()
     feat['f_higher_low'] = (l > prev_sl.shift(1)).rolling(10).sum().fillna(0).clip(0, 5) / 5
 
@@ -313,14 +313,32 @@ def generate_labels(signal_df: pd.DataFrame, target_pct: float = 2.0, max_bars: 
 
         # Simulate bar-by-bar exit (same priority as backtest)
         # NO time limit — hold sampai ada exit signal (target/stop/sell)
+        # [FIX-2] Include trailing stop (same as backtest)
         exit_return = None
         start_pos = pos + 1
         end_pos = len(c)  # no limit, sama seperti backtest
+        trail_high_val = entry_price
+        trail_active = False
+        risk_1r = entry_price - locked_stop
 
         for bar in range(start_pos, end_pos):
             bar_h = h.iloc[bar]
             bar_l = l.iloc[bar]
             bar_c = c.iloc[bar]
+
+            # Update trail high
+            if bar_h > trail_high_val:
+                trail_high_val = bar_h
+
+            # Check trailing activation: profit >= 1R
+            if not trail_active and (bar_c - entry_price) >= risk_1r * 1.5:
+                trail_active = True
+
+            # Update trailing stop if active
+            if trail_active:
+                atr_bar = signal_df.get('atr14', pd.Series(0, index=c.index)).iloc[bar] if bar < len(c) else atr_val
+                trailing_stop_val = trail_high_val - 3.0 * atr_bar
+                locked_stop = max(locked_stop, trailing_stop_val)
 
             # Priority 1: Target hit (check high first)
             if bar_h >= locked_target:
