@@ -62,6 +62,10 @@ def _resample_to_weekly(df: pd.DataFrame) -> pd.DataFrame:
     """
     Resample daily OHLCV ke weekly bars.
     Menggunakan 'W-FRI' (week ending Friday) untuk konsisten dengan BEI.
+
+    ANTI-LOOKAHEAD: Index di-shift ke hari trading BERIKUTNYA setelah period ends.
+    Weekly bar yang close Jumat baru valid mulai Senin berikutnya.
+    Ini dilakukan dengan shift(1) pada level weekly SEBELUM reindex ke daily.
     """
     if df.empty:
         return pd.DataFrame()
@@ -73,6 +77,13 @@ def _resample_to_weekly(df: pd.DataFrame) -> pd.DataFrame:
     weekly['close'] = df['close'].resample('W-FRI').last()
     weekly['volume'] = df['volume'].resample('W-FRI').sum()
 
+    weekly = weekly.dropna(subset=['close'])
+
+    # [ANTI-LOOKAHEAD] Shift index forward by 1 period.
+    # Bar yang "selesai" di Jumat baru bisa dipakai mulai bar SETELAHNYA.
+    # Implementasi: shift values down (sehingga index Jumat ini = data minggu LALU).
+    weekly = weekly.shift(1)
+
     return weekly.dropna(subset=['close'])
 
 
@@ -80,6 +91,10 @@ def _resample_to_monthly(df: pd.DataFrame) -> pd.DataFrame:
     """
     Resample daily OHLCV ke monthly bars.
     Menggunakan 'ME' (month end).
+
+    ANTI-LOOKAHEAD: Monthly bar baru valid di trading day PERTAMA bulan berikutnya.
+    Bar bulan Januari (index 31 Jan) baru boleh dipakai mulai 1 Feb.
+    Implementasi: shift(1) di level monthly sebelum reindex ke daily.
     """
     if df.empty:
         return pd.DataFrame()
@@ -90,6 +105,12 @@ def _resample_to_monthly(df: pd.DataFrame) -> pd.DataFrame:
     monthly['low'] = df['low'].resample('ME').min()
     monthly['close'] = df['close'].resample('ME').last()
     monthly['volume'] = df['volume'].resample('ME').sum()
+
+    monthly = monthly.dropna(subset=['close'])
+
+    # [ANTI-LOOKAHEAD] Shift index forward by 1 period.
+    # Bar bulan ini baru valid di bulan BERIKUTNYA (setelah close).
+    monthly = monthly.shift(1)
 
     return monthly.dropna(subset=['close'])
 
@@ -338,6 +359,23 @@ def compute_mtf(
         confirmation += result['monthly_trend_up'].astype(int) | result['monthly_trend_partial_up'].astype(int)
     result['mtf_confirmation'] = confirmation
 
+    # ── MTF Divergence Detection ──
+    # MIXED: weekly dan monthly BERTENTANGAN arah — sinyal ambigu, jangan boost
+    # Contoh: weekly bullish (score>60) + monthly bearish (score<40) atau sebaliknya
+    if has_weekly and has_monthly:
+        weekly_bullish_zone = result['weekly_trend_score'] > 60
+        weekly_bearish_zone = result['weekly_trend_score'] < 40
+        monthly_bullish_zone = result['monthly_trend_score'] > 60
+        monthly_bearish_zone = result['monthly_trend_score'] < 40
+
+        # Divergent: one clearly bullish, other clearly bearish
+        result['mtf_divergent'] = (
+            (weekly_bullish_zone & monthly_bearish_zone) |
+            (weekly_bearish_zone & monthly_bullish_zone)
+        )
+    else:
+        result['mtf_divergent'] = pd.Series(False, index=df.index)
+
     # ── MTF Signal ──
     mtf_signal = pd.Series('NEUTRAL', index=df.index)
 
@@ -350,15 +388,22 @@ def compute_mtf(
         result['daily_trend_up'] &
         (result['mtf_confirmation'] >= 1) &
         (result['mtf_score'] > 55) &
-        ~strong_buy
+        ~strong_buy &
+        ~result['mtf_divergent']  # [FIX] Jangan BUY saat higher TFs diverge
     )
     mtf_signal[buy] = 'BUY'
+
+    # MIXED: higher TFs bertentangan — sinyal ambigu, BUKAN neutral biasa
+    # Ini HARUS setelah BUY/STRONG_BUY agar tidak overwrite mereka
+    mixed = result['mtf_divergent'] & ~strong_buy
+    mtf_signal[mixed] = 'MIXED'
 
     # SELL: daily bearish + weekly weakening
     sell = (
         ~result['daily_trend_up'] &
         (result['weekly_trend_score'] < 45) &
-        (result['mtf_score'] < 45)
+        (result['mtf_score'] < 45) &
+        ~result['mtf_divergent']  # [FIX] Jangan SELL saat divergent (uncertain)
     )
     mtf_signal[sell] = 'SELL'
 
@@ -393,6 +438,7 @@ def _empty_mtf_result(index: pd.Index) -> pd.DataFrame:
         'mtf_bullish': False,
         'mtf_bearish': False,
         'mtf_aligned': False,
+        'mtf_divergent': False,
         'mtf_confirmation': 0,
         'mtf_signal': 'NEUTRAL',
     }, index=index)
@@ -420,10 +466,12 @@ def get_mtf_filter(
 
     # Boost multiplier: jika MTF aligned, boost score 10-20%
     # Jika MTF bearish, penalize 10-20%
+    # [FIX] MIXED (divergent) = NO boost/penalty (1.0) — uncertain territory
     mtf_boost = pd.Series(1.0, index=df.index)
     mtf_boost[mtf['mtf_bullish']] = 1.20        # All TFs bullish → +20%
     mtf_boost[mtf['mtf_aligned'] & ~mtf['mtf_bullish']] = 1.10  # Aligned but not all bullish → +10%
     mtf_boost[mtf['mtf_bearish']] = 0.80         # All TFs bearish → -20%
+    mtf_boost[mtf['mtf_divergent']] = 1.0        # [FIX] Divergent → NO boost (override above)
 
     return {
         'mtf_bullish': mtf['mtf_bullish'],
@@ -431,6 +479,7 @@ def get_mtf_filter(
         'mtf_score': mtf['mtf_score'],
         'mtf_signal': mtf['mtf_signal'],
         'mtf_boost': mtf_boost,
+        'mtf_divergent': mtf['mtf_divergent'],
         'weekly_trend_up': mtf['weekly_trend_up'],
         'monthly_trend_up': mtf['monthly_trend_up'],
         'weekly_trend_score': mtf['weekly_trend_score'],
