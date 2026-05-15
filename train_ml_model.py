@@ -247,6 +247,14 @@ def build_ml_features(signal_df: pd.DataFrame) -> pd.DataFrame:
         feat['f_ff_net_pct'] = 0.0
         feat['f_ff_cum5'] = 0.0
 
+    # ── MTF FEATURES (if available) ──
+    feat['f_mtf_score'] = signal_df.get('mtf_score', pd.Series(50, index=c.index)).clip(0, 100) / 100
+    feat['f_mtf_bullish'] = signal_df.get('mtf_bullish', pd.Series(False, index=c.index)).astype(float)
+    feat['f_weekly_trend_up'] = signal_df.get('weekly_trend_up', pd.Series(False, index=c.index)).astype(float)
+    feat['f_monthly_trend_up'] = signal_df.get('monthly_trend_up', pd.Series(False, index=c.index)).astype(float)
+    feat['f_weekly_trend_score'] = signal_df.get('weekly_trend_score', pd.Series(50, index=c.index)).clip(0, 100) / 100
+    feat['f_mtf_confirmation'] = signal_df.get('mtf_confirmation', pd.Series(0, index=c.index)).clip(0, 2) / 2
+
     return feat.fillna(0)
 
 
@@ -294,9 +302,14 @@ def generate_labels(signal_df: pd.DataFrame, target_pct: float = 2.0, max_bars: 
         if entry_price <= 0:
             continue
 
-        # Get stop and target locked at buy time (same as backtest)
-        locked_stop = stop_aktif.iloc[pos] if stop_aktif.iloc[pos] > 0 else entry_price * 0.93
-        locked_target = target.iloc[pos] if target.iloc[pos] > 0 and target.iloc[pos] < entry_price * 2 else entry_price * (1 + target_pct / 100)
+        # [FIX] Kalkulasi target/stop INDEPENDEN dari entry_price (sama seperti backtest)
+        # Tidak pakai target_final/stop_aktif engine (bisa ffill lintas trade)
+        atr_val = signal_df.get('atr14', pd.Series(0, index=c.index)).iloc[pos]
+        _target_mult = 3.0  # Sama dengan SIGNAL_CONFIG di backtest
+        _stop_pct = 7.0
+        _gap_buf = 0.5
+        locked_target = max(entry_price + atr_val * _target_mult, entry_price * 1.05)
+        locked_stop = entry_price * (1 - (_stop_pct + _gap_buf) / 100)
 
         # Simulate bar-by-bar exit (same priority as backtest)
         exit_return = None
