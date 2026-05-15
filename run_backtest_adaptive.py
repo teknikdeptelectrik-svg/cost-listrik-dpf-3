@@ -53,6 +53,12 @@ TICKERS = []  # Kosong = semua saham
 START_DATE = "2020-01-02"
 END_DATE   = "2026-05-11"
 
+# Walk-Forward Validation (Fix overfitting)
+# IN_SAMPLE: 2020-2023 (tune parameters)
+# OUT_OF_SAMPLE: 2024-2026 (validate)
+WALK_FORWARD_SPLIT = "2024-01-01"  # Data sebelum ini = in-sample, sesudahnya = out-of-sample
+REPORT_OOS = True  # True = print separate in-sample vs out-of-sample metrics
+
 # Parameter backtest
 MIN_BARS        = 100
 AGENT_THRESHOLD = 50    # [Exp2] dari 40 → 50 (hanya signal high-quality)
@@ -380,9 +386,22 @@ def simulate_trades(
                     except Exception:
                         pass  # ML filter optional, don't block if error
 
-                # Ambil target & stop yang dikunci saat buy
-                locked_target = target.iloc[i] if target.iloc[i] > 0 else entry_price * 1.05
-                locked_hard_stop = hard_stop.iloc[i] if hard_stop.iloc[i] > 0 else entry_price * 0.947
+                # [FIX-FUNDAMENTAL] Kalkulasi target & stop INDEPENDEN dari entry_price.
+                # Tidak pakai target_final/hard_stop_final dari engine (bisa ffill lintas trade).
+                # Hitung langsung: target = entry + ATR * mult, stop = entry * (1 - stop_pct%)
+                _atr_at_entry = signal_df.get("atr14", pd.Series(0, index=signal_df.index)).iloc[i]
+                _target_mult = SIGNAL_CONFIG.get('target_atr_mult', 3.0)
+                _stop_pct = SIGNAL_CONFIG.get('stop_pct', 7.0)
+                _gap_buf = SIGNAL_CONFIG.get('gap_buffer_pct', 0.5)
+
+                # Target = entry + ATR * multiplier (minimum 5% gain)
+                locked_target = max(
+                    entry_price + _atr_at_entry * _target_mult,
+                    entry_price * 1.05
+                )
+
+                # Stop = entry * (1 - (stop_pct + gap_buffer) / 100)
+                locked_hard_stop = entry_price * (1 - (_stop_pct + _gap_buf) / 100)
 
                 # [FIX-WR] 1R = risiko awal (entry - hard_stop)
                 risk_1r = entry_price - locked_hard_stop
@@ -448,7 +467,7 @@ def simulate_trades(
                 current_trade.exit_date = idx
                 current_trade.exit_price = locked_target
                 current_trade.exit_reason = "TARGET_HIT"
-                current_trade.return_pct = (locked_target - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (locked_target - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
                 current_trade.bars_held = bars_held
                 current_trade.is_win = True
                 trades.append(current_trade)
@@ -461,13 +480,13 @@ def simulate_trades(
                 current_trade.exit_date = idx
                 current_trade.exit_price = locked_stop
                 current_trade.exit_reason = "STOP_HIT"
-                current_trade.return_pct = (locked_stop - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (locked_stop - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
                 current_trade.bars_held = bars_held
                 # [FIX-WR] Jika TP1 sudah hit, hasilnya adalah blend:
                 # 50% di TP1 + 50% di stop (bisa breakeven atau profit)
                 if tp1_hit:
-                    tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
-                    stop_return = (locked_stop - current_trade.entry_price) / current_trade.entry_price * 100
+                    tp1_return = (tp1_level - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
+                    stop_return = (locked_stop - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
                     current_trade.return_pct = tp1_return * PARTIAL_PCT + stop_return * (1 - PARTIAL_PCT)
                     current_trade.exit_reason = "PARTIAL_TP+TRAIL_STOP"
                 current_trade.is_win = current_trade.return_pct > 0
@@ -481,11 +500,11 @@ def simulate_trades(
                 current_trade.exit_date = idx
                 current_trade.exit_price = c
                 current_trade.exit_reason = "SELL_SIGNAL"
-                current_trade.return_pct = (c - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (c - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
                 # [FIX-WR] Blend jika TP1 sudah hit
                 if tp1_hit:
-                    tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
-                    sell_return = (c - current_trade.entry_price) / current_trade.entry_price * 100
+                    tp1_return = (tp1_level - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
+                    sell_return = (c - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
                     current_trade.return_pct = tp1_return * PARTIAL_PCT + sell_return * (1 - PARTIAL_PCT)
                     current_trade.exit_reason = "PARTIAL_TP+SELL_SIGNAL"
                 current_trade.bars_held = bars_held
@@ -501,10 +520,10 @@ def simulate_trades(
         current_trade.exit_date = signal_df.index[-1]
         current_trade.exit_price = last_close
         current_trade.exit_reason = "END_OF_DATA"
-        current_trade.return_pct = (last_close - current_trade.entry_price) / current_trade.entry_price * 100
+        current_trade.return_pct = (last_close - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
         if tp1_hit:
-            tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
-            end_return = (last_close - current_trade.entry_price) / current_trade.entry_price * 100
+            tp1_return = (tp1_level - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
+            end_return = (last_close - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
             current_trade.return_pct = tp1_return * PARTIAL_PCT + end_return * (1 - PARTIAL_PCT)
         current_trade.bars_held = len(signal_df) - signal_df.index.get_loc(current_trade.entry_date)
         current_trade.is_win = current_trade.return_pct > 0
@@ -756,6 +775,28 @@ def main():
 
     if all_trades:
         overall = compute_metrics(all_trades)
+
+        # Walk-Forward: Split trades into in-sample vs out-of-sample
+        oos_metrics = None
+        is_metrics = None
+        if REPORT_OOS and WALK_FORWARD_SPLIT:
+            split_date = pd.Timestamp(WALK_FORWARD_SPLIT)
+            is_trades = [t for t in all_trades if pd.Timestamp(t.entry_date) < split_date]
+            oos_trades = [t for t in all_trades if pd.Timestamp(t.entry_date) >= split_date]
+            if is_trades:
+                is_metrics = compute_metrics(is_trades)
+            if oos_trades:
+                oos_metrics = compute_metrics(oos_trades)
+            logger.info(f"\n--- WALK-FORWARD VALIDATION ---")
+            logger.info(f"Split date: {WALK_FORWARD_SPLIT}")
+            if is_metrics:
+                logger.info(f"IN-SAMPLE  (before {WALK_FORWARD_SPLIT}): {is_metrics['n_trades']} trades, WR={is_metrics['win_rate']*100:.1f}%")
+            if oos_metrics:
+                logger.info(f"OUT-OF-SAMPLE (after {WALK_FORWARD_SPLIT}): {oos_metrics['n_trades']} trades, WR={oos_metrics['win_rate']*100:.1f}%")
+            if is_metrics and oos_metrics:
+                wr_drop = (is_metrics['win_rate'] - oos_metrics['win_rate']) * 100
+                logger.info(f"WR DROP (overfit indicator): {wr_drop:.1f}pp {'⚠️ OVERFIT' if wr_drop > 10 else '✅ ROBUST'}")
+            logger.info("")
 
         # Exit reason summary
         exit_summary = overall.get("exit_reasons", {})

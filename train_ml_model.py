@@ -66,7 +66,7 @@ MIN_BARS   = 200  # Need enough data for MA200
 
 # Label generation
 TARGET_PCT    = 2.0    # Minimum % gain to count as "win"
-MAX_BARS_FWD  = 15     # Look-forward window (bars)
+MAX_BARS_FWD  = 60     # Look-forward window (bars) — sama dengan max_holding_bars backtest
 
 # Model output
 MODEL_DIR  = "data/models"
@@ -227,12 +227,12 @@ def build_ml_features(signal_df: pd.DataFrame) -> pd.DataFrame:
     # Distance to MA20 (pullback depth)
     feat['f_pullback_depth'] = ((c - ma21) / ma21.replace(0, np.nan) * 100).fillna(0).clip(-10, 10) / 10
 
-    # Higher High / Higher Low recent
-    swing_h = h.rolling(5, center=True).max() == h
+    # Higher High / Higher Low recent — NO center=True (lookahead bias fix)
+    swing_h = h.rolling(5).max() == h
     prev_sh = h.where(swing_h).ffill()
     feat['f_higher_high'] = (h > prev_sh.shift(1)).rolling(10).sum().fillna(0).clip(0, 5) / 5
 
-    swing_l = l.rolling(5, center=True).min() == l
+    swing_l = l.rolling(5).min() == l
     prev_sl = l.where(swing_l).ffill()
     feat['f_higher_low'] = (l > prev_sl.shift(1)).rolling(10).sum().fillna(0).clip(0, 5) / 5
 
@@ -246,6 +246,14 @@ def build_ml_features(signal_df: pd.DataFrame) -> pd.DataFrame:
     else:
         feat['f_ff_net_pct'] = 0.0
         feat['f_ff_cum5'] = 0.0
+
+    # ── MTF FEATURES (if available) ──
+    feat['f_mtf_score'] = signal_df.get('mtf_score', pd.Series(50, index=c.index)).clip(0, 100) / 100
+    feat['f_mtf_bullish'] = signal_df.get('mtf_bullish', pd.Series(False, index=c.index)).astype(float)
+    feat['f_weekly_trend_up'] = signal_df.get('weekly_trend_up', pd.Series(False, index=c.index)).astype(float)
+    feat['f_monthly_trend_up'] = signal_df.get('monthly_trend_up', pd.Series(False, index=c.index)).astype(float)
+    feat['f_weekly_trend_score'] = signal_df.get('weekly_trend_score', pd.Series(50, index=c.index)).clip(0, 100) / 100
+    feat['f_mtf_confirmation'] = signal_df.get('mtf_confirmation', pd.Series(0, index=c.index)).clip(0, 2) / 2
 
     return feat.fillna(0)
 
@@ -294,19 +302,43 @@ def generate_labels(signal_df: pd.DataFrame, target_pct: float = 2.0, max_bars: 
         if entry_price <= 0:
             continue
 
-        # Get stop and target locked at buy time (same as backtest)
-        locked_stop = stop_aktif.iloc[pos] if stop_aktif.iloc[pos] > 0 else entry_price * 0.93
-        locked_target = target.iloc[pos] if target.iloc[pos] > 0 and target.iloc[pos] < entry_price * 2 else entry_price * (1 + target_pct / 100)
+        # [FIX] Kalkulasi target/stop INDEPENDEN dari entry_price (sama seperti backtest)
+        # Tidak pakai target_final/stop_aktif engine (bisa ffill lintas trade)
+        atr_val = signal_df.get('atr14', pd.Series(0, index=c.index)).iloc[pos]
+        _target_mult = 3.0  # Sama dengan SIGNAL_CONFIG di backtest
+        _stop_pct = 7.0
+        _gap_buf = 0.5
+        locked_target = max(entry_price + atr_val * _target_mult, entry_price * 1.05)
+        locked_stop = entry_price * (1 - (_stop_pct + _gap_buf) / 100)
 
         # Simulate bar-by-bar exit (same priority as backtest)
+        # NO time limit — hold sampai ada exit signal (target/stop/sell)
+        # [FIX-2] Include trailing stop (same as backtest)
         exit_return = None
         start_pos = pos + 1
-        end_pos = min(pos + max_bars + 1, len(c))
+        end_pos = len(c)  # no limit, sama seperti backtest
+        trail_high_val = entry_price
+        trail_active = False
+        risk_1r = entry_price - locked_stop
 
         for bar in range(start_pos, end_pos):
             bar_h = h.iloc[bar]
             bar_l = l.iloc[bar]
             bar_c = c.iloc[bar]
+
+            # Update trail high
+            if bar_h > trail_high_val:
+                trail_high_val = bar_h
+
+            # Check trailing activation: profit >= 1R
+            if not trail_active and (bar_c - entry_price) >= risk_1r * 1.5:
+                trail_active = True
+
+            # Update trailing stop if active
+            if trail_active:
+                atr_bar = signal_df.get('atr14', pd.Series(0, index=c.index)).iloc[bar] if bar < len(c) else atr_val
+                trailing_stop_val = trail_high_val - 3.0 * atr_bar
+                locked_stop = max(locked_stop, trailing_stop_val)
 
             # Priority 1: Target hit (check high first)
             if bar_h >= locked_target:
@@ -466,6 +498,16 @@ def main():
     tickers = get_tickers(conn)
     logger.info(f"Total tickers: {len(tickers)}")
 
+    # Setup Agent Filter (same as backtest — only train on high-quality signals)
+    AGENT_THRESHOLD = 50
+    orchestrator = None
+    try:
+        from core.pixellent_agents import AgentOrchestrator
+        orchestrator = AgentOrchestrator()
+        logger.info(f"Agent Filter: ON (threshold={AGENT_THRESHOLD})")
+    except Exception as e:
+        logger.warning(f"Agent system not available: {e} — training WITHOUT agent filter")
+
     # === COLLECT FEATURES & LABELS FROM ALL STOCKS ===
     all_features = []
     all_labels = []
@@ -491,6 +533,27 @@ def main():
             if buy_count == 0:
                 skipped += 1
                 continue
+
+            # [FIX] Agent Filter — sama seperti backtest, hanya train pada sinyal >= threshold
+            if orchestrator is not None:
+                buy_mask = signal_df.get('buy_signal', pd.Series(False, index=signal_df.index))
+                buy_indices = signal_df.index[buy_mask.astype(bool)]
+                filtered_buys = pd.Series(False, index=signal_df.index)
+                for idx in buy_indices:
+                    try:
+                        row = signal_df.loc[idx]
+                        from run_backtest_adaptive import run_agent_scoring
+                        result = run_agent_scoring(row, ticker, orchestrator)
+                        if result['score'] >= AGENT_THRESHOLD:
+                            filtered_buys.loc[idx] = True
+                    except Exception:
+                        filtered_buys.loc[idx] = True  # fallback: keep signal if agent fails
+                signal_df = signal_df.copy()
+                signal_df['buy_signal'] = filtered_buys
+
+                if filtered_buys.sum() == 0:
+                    skipped += 1
+                    continue
 
             # Build features & labels
             features = build_ml_features(signal_df)
