@@ -479,6 +479,16 @@ def main():
     tickers = get_tickers(conn)
     logger.info(f"Total tickers: {len(tickers)}")
 
+    # Setup Agent Filter (same as backtest — only train on high-quality signals)
+    AGENT_THRESHOLD = 50
+    orchestrator = None
+    try:
+        from core.pixellent_agents import AgentOrchestrator
+        orchestrator = AgentOrchestrator()
+        logger.info(f"Agent Filter: ON (threshold={AGENT_THRESHOLD})")
+    except Exception as e:
+        logger.warning(f"Agent system not available: {e} — training WITHOUT agent filter")
+
     # === COLLECT FEATURES & LABELS FROM ALL STOCKS ===
     all_features = []
     all_labels = []
@@ -504,6 +514,27 @@ def main():
             if buy_count == 0:
                 skipped += 1
                 continue
+
+            # [FIX] Agent Filter — sama seperti backtest, hanya train pada sinyal >= threshold
+            if orchestrator is not None:
+                buy_mask = signal_df.get('buy_signal', pd.Series(False, index=signal_df.index))
+                buy_indices = signal_df.index[buy_mask.astype(bool)]
+                filtered_buys = pd.Series(False, index=signal_df.index)
+                for idx in buy_indices:
+                    try:
+                        row = signal_df.loc[idx]
+                        from run_backtest_adaptive import run_agent_scoring
+                        result = run_agent_scoring(row, ticker, orchestrator)
+                        if result['score'] >= AGENT_THRESHOLD:
+                            filtered_buys.loc[idx] = True
+                    except Exception:
+                        filtered_buys.loc[idx] = True  # fallback: keep signal if agent fails
+                signal_df = signal_df.copy()
+                signal_df['buy_signal'] = filtered_buys
+
+                if filtered_buys.sum() == 0:
+                    skipped += 1
+                    continue
 
             # Build features & labels
             features = build_ml_features(signal_df)
