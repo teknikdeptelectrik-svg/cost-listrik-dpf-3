@@ -671,6 +671,7 @@ def compute_signals(df: pd.DataFrame,
     in_pos_final = _in_position_from(buy_final_np, sell_final_np, c.index)
 
     # [A3] HardStop & Target FINAL dari Buy_Final (reuse pre-computed arrays)
+    # [FIX] Reset ke NaN saat NOT in_position — mencegah ffill lintas trade
     hard_stop_final = _lock_at_buy(
         buy_final_np,
         lambda i: _open_arr[i] * (1 - (_stop_pct_arr_vals[i] + _gap_buf) / 100),
@@ -683,6 +684,12 @@ def compute_signals(df: pd.DataFrame,
         c.index
     )
     buy_price_final = _lock_at_buy(buy_final_np, lambda i: _open_arr[i], c.index)
+
+    # [FIX] Mask target/stop/buy_price ke NaN saat NOT in_position
+    # Ini mencegah ffill lintas trade yang menyebabkan backtest ambil target lama
+    hard_stop_final = hard_stop_final.where(in_pos_final, np.nan)
+    target_final = target_final.where(in_pos_final, np.nan)
+    buy_price_final = buy_price_final.where(in_pos_final, np.nan)
 
     # [A2] FloatPct dari InPosition Final
     float_pct = ((c / buy_price_final.replace(0, np.nan) - 1) * 100

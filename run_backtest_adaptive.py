@@ -380,17 +380,22 @@ def simulate_trades(
                     except Exception:
                         pass  # ML filter optional, don't block if error
 
-                # Ambil target & stop yang dikunci saat buy
-                # [FIX] Guard NaN/inf — kalau target/stop belum valid, fallback ke default
-                _raw_target = target.iloc[i]
-                locked_target = _raw_target if (
-                    _raw_target > 0 and not np.isinf(_raw_target) and not np.isnan(_raw_target)
-                ) else entry_price * 1.05
+                # [FIX-FUNDAMENTAL] Kalkulasi target & stop INDEPENDEN dari entry_price.
+                # Tidak pakai target_final/hard_stop_final dari engine (bisa ffill lintas trade).
+                # Hitung langsung: target = entry + ATR * mult, stop = entry * (1 - stop_pct%)
+                _atr_at_entry = signal_df.get("atr14", pd.Series(0, index=signal_df.index)).iloc[i]
+                _target_mult = SIGNAL_CONFIG.get('target_atr_mult', 3.0)
+                _stop_pct = SIGNAL_CONFIG.get('stop_pct', 7.0)
+                _gap_buf = SIGNAL_CONFIG.get('gap_buffer_pct', 0.5)
 
-                _raw_stop = hard_stop.iloc[i]
-                locked_hard_stop = _raw_stop if (
-                    _raw_stop > 0 and not np.isinf(_raw_stop) and not np.isnan(_raw_stop)
-                ) else entry_price * 0.947
+                # Target = entry + ATR * multiplier (minimum 5% gain)
+                locked_target = max(
+                    entry_price + _atr_at_entry * _target_mult,
+                    entry_price * 1.05
+                )
+
+                # Stop = entry * (1 - (stop_pct + gap_buffer) / 100)
+                locked_hard_stop = entry_price * (1 - (_stop_pct + _gap_buf) / 100)
 
                 # [FIX-WR] 1R = risiko awal (entry - hard_stop)
                 risk_1r = entry_price - locked_hard_stop
