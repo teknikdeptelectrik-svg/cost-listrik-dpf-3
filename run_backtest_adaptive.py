@@ -381,8 +381,16 @@ def simulate_trades(
                         pass  # ML filter optional, don't block if error
 
                 # Ambil target & stop yang dikunci saat buy
-                locked_target = target.iloc[i] if target.iloc[i] > 0 else entry_price * 1.05
-                locked_hard_stop = hard_stop.iloc[i] if hard_stop.iloc[i] > 0 else entry_price * 0.947
+                # [FIX] Guard NaN/inf — kalau target/stop belum valid, fallback ke default
+                _raw_target = target.iloc[i]
+                locked_target = _raw_target if (
+                    _raw_target > 0 and not np.isinf(_raw_target) and not np.isnan(_raw_target)
+                ) else entry_price * 1.05
+
+                _raw_stop = hard_stop.iloc[i]
+                locked_hard_stop = _raw_stop if (
+                    _raw_stop > 0 and not np.isinf(_raw_stop) and not np.isnan(_raw_stop)
+                ) else entry_price * 0.947
 
                 # [FIX-WR] 1R = risiko awal (entry - hard_stop)
                 risk_1r = entry_price - locked_hard_stop
@@ -448,7 +456,7 @@ def simulate_trades(
                 current_trade.exit_date = idx
                 current_trade.exit_price = locked_target
                 current_trade.exit_reason = "TARGET_HIT"
-                current_trade.return_pct = (locked_target - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (locked_target - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
                 current_trade.bars_held = bars_held
                 current_trade.is_win = True
                 trades.append(current_trade)
@@ -461,13 +469,13 @@ def simulate_trades(
                 current_trade.exit_date = idx
                 current_trade.exit_price = locked_stop
                 current_trade.exit_reason = "STOP_HIT"
-                current_trade.return_pct = (locked_stop - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (locked_stop - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
                 current_trade.bars_held = bars_held
                 # [FIX-WR] Jika TP1 sudah hit, hasilnya adalah blend:
                 # 50% di TP1 + 50% di stop (bisa breakeven atau profit)
                 if tp1_hit:
-                    tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
-                    stop_return = (locked_stop - current_trade.entry_price) / current_trade.entry_price * 100
+                    tp1_return = (tp1_level - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
+                    stop_return = (locked_stop - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
                     current_trade.return_pct = tp1_return * PARTIAL_PCT + stop_return * (1 - PARTIAL_PCT)
                     current_trade.exit_reason = "PARTIAL_TP+TRAIL_STOP"
                 current_trade.is_win = current_trade.return_pct > 0
@@ -481,11 +489,11 @@ def simulate_trades(
                 current_trade.exit_date = idx
                 current_trade.exit_price = c
                 current_trade.exit_reason = "SELL_SIGNAL"
-                current_trade.return_pct = (c - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.return_pct = (c - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
                 # [FIX-WR] Blend jika TP1 sudah hit
                 if tp1_hit:
-                    tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
-                    sell_return = (c - current_trade.entry_price) / current_trade.entry_price * 100
+                    tp1_return = (tp1_level - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
+                    sell_return = (c - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
                     current_trade.return_pct = tp1_return * PARTIAL_PCT + sell_return * (1 - PARTIAL_PCT)
                     current_trade.exit_reason = "PARTIAL_TP+SELL_SIGNAL"
                 current_trade.bars_held = bars_held
@@ -501,10 +509,10 @@ def simulate_trades(
         current_trade.exit_date = signal_df.index[-1]
         current_trade.exit_price = last_close
         current_trade.exit_reason = "END_OF_DATA"
-        current_trade.return_pct = (last_close - current_trade.entry_price) / current_trade.entry_price * 100
+        current_trade.return_pct = (last_close - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
         if tp1_hit:
-            tp1_return = (tp1_level - current_trade.entry_price) / current_trade.entry_price * 100
-            end_return = (last_close - current_trade.entry_price) / current_trade.entry_price * 100
+            tp1_return = (tp1_level - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
+            end_return = (last_close - current_trade.entry_price) / max(current_trade.entry_price, 1) * 100
             current_trade.return_pct = tp1_return * PARTIAL_PCT + end_return * (1 - PARTIAL_PCT)
         current_trade.bars_held = len(signal_df) - signal_df.index.get_loc(current_trade.entry_date)
         current_trade.is_win = current_trade.return_pct > 0
