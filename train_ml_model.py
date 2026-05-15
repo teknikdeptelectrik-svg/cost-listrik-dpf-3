@@ -66,7 +66,7 @@ MIN_BARS   = 200  # Need enough data for MA200
 
 # Label generation
 TARGET_PCT    = 2.0    # Minimum % gain to count as "win"
-MAX_BARS_FWD  = 15     # Look-forward window (bars)
+MAX_BARS_FWD  = 60     # Look-forward window (bars) — sama dengan max_holding_bars backtest
 
 # Model output
 MODEL_DIR  = "data/models"
