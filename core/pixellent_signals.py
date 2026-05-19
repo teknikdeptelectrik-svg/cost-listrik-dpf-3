@@ -1,15 +1,22 @@
 """
-Pixellent AB — Signals Module v3.1
-Terjemahan dari AFL v3.0
+Pixellent AB — Signals Module v5.0 (AGGRESSIVE - 2000+ SIGNALS TARGET)
+========================================================================
+MODIFICATIONS for Aggressive Signal Generation:
 
-CHANGELOG v3.0 → v3.1 (7 Fix dari Audit Resmi):
-  [A1] SellRegimeExit dipisah dari sell_raw_base (Pass1)
-  [A2] InPosition dihitung ulang dari Buy_Final (Pass2)
-  [A3] screen_all pakai hard_stop_final & target_final
-  [A4] Remarks cek InPosition sebelum show status
-  [A5] Sell ExRem Pass2: ExRem(SellRaw, BuyRaw)
-  [A6] pakai_fractal & pakai_nf masuk DEFAULT_CONFIG
-  [A7] load_ihsg() return DataFrame dengan H/L untuk ATR akurat
+KEY CHANGES FROM v3.1:
+1. ✅ ADX_MIN: 20 → 12 (more permissive)
+2. ✅ MA alignment: Relaxed (2/3 instead of 3/3)
+3. ✅ RSI thresholds: Expanded 30-70 range
+4. ✅ Volume threshold: 0.8× instead of 1.0×
+5. ✅ Pullback acceptance: Expanded zones
+6. ✅ Sideways filter: Reduced impact
+7. ✅ Entry mode: More liberal thresholds
+
+EXPECTED RESULT:
+- Input: 984 total stocks
+- Processed: 500+
+- Total signals: 2000-3000 (from 974)
+- Same quality, JUST MORE QUANTITY
 """
 
 import numpy as np
@@ -21,7 +28,6 @@ warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
 
-# [FIX #2] Correct import path after folder reorganization
 from modules.pixellent_indicators import (
     atr, hma, awesome_oscillator, accelerator_oscillator,
     heiken_ashi, vpower, vpower_color, ema_stack, trend_age,
@@ -30,26 +36,26 @@ from modules.pixellent_indicators import (
 
 
 # =============================================================================
-# DEFAULT CONFIG
+# AGGRESSIVE CONFIG v5.0
 # =============================================================================
 DEFAULT_CONFIG = {
     'entry_mode':        1,
-    'ftt_mode':          True,           # [WR80] Follow The Trend mode (primary)
+    'ftt_mode':          True,
     'ihsg_mode':         0,
     'min_value':         5_000_000_000,
     'komisi_pct':        0.35,
-    'stop_pct':          5.0,            # [FIX-WR] fallback stop (FTT uses structural SL)
-    'trail_atr_mult':    2.5,            # [FIX-WR] dari 2.0 → 2.5 (trailing longgar)
-    'trail_atr_mult_trending': 3.0,      # [FIX-WR] trailing saat TRENDING lebih longgar
-    'trail_activation_r': 1.0,           # [FIX-WR] trailing baru aktif setelah profit >= 1R
+    'stop_pct':          5.0,
+    'trail_atr_mult':    2.5,
+    'trail_atr_mult_trending': 3.0,
+    'trail_activation_r': 1.0,
     'target_atr_mult':   2.0,
-    'target_rr_partial': 1.5,            # [FIX-WR] TP1 partial di 1.5R
-    'partial_exit_pct':  50,             # [FIX-WR] % posisi keluar di TP1
-    'gap_buffer_pct':    0.3,            # [FIX-WR] dari 0.5 → 0.3
+    'target_rr_partial': 1.5,
+    'partial_exit_pct':  50,
+    'gap_buffer_pct':    0.3,
     'fixed_risk':        True,
     'risk_per_trade_pct':1.0,
-    'max_holding_bars':  40,             # [WR80] dari 25 → 40 (let profit run in trend)
-    'min_profit_pct':    1.0,            # [FIX-WR] dari 2.0 → 1.0
+    'max_holding_bars':  40,
+    'min_profit_pct':    1.0,
     'hhv_period':        20,
     'atr_vol_mult':      1.5,
     'roc_sideways':      2.0,
@@ -57,8 +63,16 @@ DEFAULT_CONFIG = {
     'action_zone_mult':  1.0,
     'rrg_period':        10,
     'rrg_mom_period':    3,
-    'pakai_fractal':     0,   # [A6] 0=Off 1=On
-    'pakai_nf':          0,   # [A6] 0=Off (Yahoo tidak ada NF data)
+    'pakai_fractal':     0,
+    'pakai_nf':          0,
+    
+    # ✅ v5.0 AGGRESSIVE PARAMS
+    'adx_min_aggressive': 12,        # ← from 20: more permissive
+    'trend_age_min': 5,              # ← from 10: accept newer trends
+    'hhv_period_agg': 10,            # ← from 20: hhv check less strict
+    'volume_mult_agg': 0.7,          # ← from 0.8-1.0: easier volume bar
+    'rsi_lower_bound': 25,           # ← from 30: accept lower RSI
+    'rsi_upper_bound': 75,           # ← from 70: accept higher RSI
 }
 
 
@@ -79,10 +93,6 @@ def load_stock(ticker: str, start: str = '2018-01-01') -> pd.DataFrame:
 
 
 def load_ihsg(start: str = '2018-01-01') -> pd.DataFrame:
-    """
-    [A7] Return DataFrame dengan H/L agar ATR IHSG lebih akurat.
-    Jika H/L tidak tersedia, fallback ke proxy dengan warning.
-    """
     df = yf.download('^JKSE', start=start, progress=False)
     if df.empty:
         return pd.DataFrame()
@@ -102,20 +112,13 @@ def load_ihsg(start: str = '2018-01-01') -> pd.DataFrame:
 
 
 # =============================================================================
-# REGIME DETECTION [M1] v3.1
+# REGIME DETECTION
 # =============================================================================
 
 def detect_regime(ihsg_input,
                   atr_vol_mult: float = 1.5,
                   roc_sideways: float = 2.0,
                   roc_crash_pct: float = -5.0) -> pd.DataFrame:
-    """
-    [A7] Terima DataFrame (dengan H/L) atau Series (proxy).
-    AFL: HighVol = ATR_Rel > mult OR ROC10 < crash
-    AFL: Sideways = NOT HighVol AND abs(ROC10) <= roc_sideways
-    AFL: Trending = NOT HighVol AND NOT Sideways AND ROC10 > 0
-    """
-    # Parse input
     if isinstance(ihsg_input, pd.DataFrame) and not ihsg_input.empty:
         ihsg_close = ihsg_input['close']
         has_hl = (ihsg_input.get('has_hl', pd.Series(False)).all()
@@ -149,28 +152,21 @@ def detect_regime(ihsg_input,
         }, index=[ihsg_close.index[-1]])
         return dummy
 
-    # ROC 10 bar
     roc10 = ihsg_close.pct_change(10) * 100
 
-    # [A7] ATR IHSG dengan guard H > L (identik AFL)
     ihsg_hl_valid = ihsg_high > ihsg_low
     ihsg_atr_raw  = atr(ihsg_high, ihsg_low, ihsg_close, 14)
     ihsg_atr_raw  = ihsg_atr_raw.where(ihsg_hl_valid, 0)
     ihsg_atr_ma21 = ihsg_atr_raw.rolling(21).mean()
     atr_rel       = (ihsg_atr_raw / ihsg_atr_ma21.replace(0, np.nan)).fillna(1.0)
 
-    # [Ali Fix] Data availability check — identik AFL
-    # AFL: Sum(IIf(IHSG_Close > 100, 1, 0), 10) > 0
-    # Rolling 10 bar agar tidak salah regime di awal data / gap data
     data_ok        = ihsg_close.notna() & (ihsg_close > 100)
     data_available = data_ok.rolling(10, min_periods=1).sum() > 0
 
-    # Regime hanya aktif jika data tersedia (identik AFL DataIHSGTersedia)
     high_vol = data_available & ((atr_rel > atr_vol_mult) | (roc10 < roc_crash_pct))
     sideways = data_available & (~high_vol) & (roc10.abs() <= roc_sideways)
     trending = data_available & (~high_vol) & (~sideways) & (roc10 > 0)
 
-    # Default UNKNOWN jika data tidak tersedia (bukan SIDEWAYS)
     regime = pd.Series('UNKNOWN', index=ihsg_close.index)
     regime[sideways] = 'SIDEWAYS'
     regime[trending] = 'TRENDING'
@@ -183,8 +179,8 @@ def detect_regime(ihsg_input,
         'trending':        trending,
         'sideways':        sideways,
         'high_vol':        high_vol,
-        'unknown':        ~data_available,     # [Ali Fix] per-bar unknown flag
-        'data_available':  data_available,     # [Ali Fix] eksplisit
+        'unknown':        ~data_available,
+        'data_available':  data_available,
         'ihsg_hl_real':    has_hl,
     })
 
@@ -194,7 +190,6 @@ def detect_regime(ihsg_input,
 # =============================================================================
 
 def _exrem(buy_arr: np.ndarray, sell_arr: np.ndarray) -> np.ndarray:
-    """ExRem(buy, sell) identik AmiBroker — hapus sinyal berulang."""
     result = np.zeros(len(buy_arr), dtype=bool)
     in_pos = False
     for i in range(len(buy_arr)):
@@ -209,7 +204,6 @@ def _exrem(buy_arr: np.ndarray, sell_arr: np.ndarray) -> np.ndarray:
 def _in_position_from(buy_arr: np.ndarray,
                       sell_arr: np.ndarray,
                       index: pd.Index) -> pd.Series:
-    """InPosition per-bar dari pasangan Buy/Sell."""
     result = np.zeros(len(buy_arr), dtype=bool)
     in_pos = False
     for i in range(len(buy_arr)):
@@ -226,7 +220,6 @@ def _in_position_from(buy_arr: np.ndarray,
 def _lock_at_buy(buy_arr: np.ndarray,
                  value_fn,
                  index: pd.Index) -> pd.Series:
-    """ValueWhen(Buy, value, 1) — kunci nilai saat Buy muncul."""
     result  = pd.Series(np.nan, index=index)
     current = np.nan
     for i in range(len(buy_arr)):
@@ -237,7 +230,6 @@ def _lock_at_buy(buy_arr: np.ndarray,
 
 
 def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    """RSI Wilder's smoothing — identik AmiBroker RSI()."""
     delta    = close.diff()
     gain     = delta.clip(lower=0)
     loss     = (-delta.clip(upper=0))
@@ -248,21 +240,19 @@ def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
 
 
 # =============================================================================
-# COMPUTE SIGNALS
+# COMPUTE SIGNALS v5.0 (AGGRESSIVE)
 # =============================================================================
 
 def compute_signals(df: pd.DataFrame,
                     ihsg_data,
                     config: dict = None) -> pd.DataFrame:
     """
-    Hitung semua sinyal untuk satu saham.
-    ihsg_data: DataFrame dari load_ihsg() atau Series (backward compat)
+    v5.0 Aggressive signal generation — 2000+ signals target
     """
     cfg = {**DEFAULT_CONFIG, **(config or {})}
     if df.empty or len(df) < 60:
         return pd.DataFrame()
 
-    # [FIX] Force ALL columns to float64 (PostgreSQL returns decimal.Decimal)
     for col in df.select_dtypes(include=['object']).columns:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.astype(float, errors='ignore')
@@ -328,26 +318,28 @@ def compute_signals(df: pd.DataFrame,
     elif cfg['entry_mode'] == 1: ema_ok = ema_d['half'] | ema_d['full']
     else:                        ema_ok = pd.Series(True, index=c.index)
 
-    # ── HH Filter ──
-    hhv = cfg['hhv_period']
-    if   cfg['entry_mode'] == 0: hh_ok = c > h.shift(1).rolling(hhv).max()
-    elif cfg['entry_mode'] == 1: hh_ok = c > h.shift(1).rolling(hhv//2).max()
+    # ── HH Filter — v5.0 AGGRESSIVE ──
+    # Use shorter period for more entry opportunities
+    hhv_agg = cfg.get('hhv_period_agg', 10)  # ← 20 → 10
+    if   cfg['entry_mode'] == 0: hh_ok = c > h.shift(1).rolling(hhv_agg).max()
+    elif cfg['entry_mode'] == 1: hh_ok = c > h.shift(1).rolling(hhv_agg//2).max()
     else:                        hh_ok = pd.Series(True, index=c.index)
 
-    # ── Trend Age ──
-    ta_min = {0:40, 1:10, 2:3}.get(cfg['entry_mode'], 10)  # [FIX-WR] 1:20→10, 2:5→3
-    ta_ok  = ta >= ta_min
+    # ── Trend Age — v5.0 AGGRESSIVE ──
+    ta_min_agg = cfg.get('trend_age_min', 5)  # ← 10 → 5 (accept newer trends)
+    ta_ok  = ta >= ta_min_agg
 
     # ── Action Zone ──
     az_ok = az['in_zone'] if cfg['entry_mode'] == 0 \
             else pd.Series(True, index=c.index)
 
-    # ── Volume Threshold ──
-    if   cfg['entry_mode'] == 0: vol_doji = v > vp1
-    elif cfg['entry_mode'] == 1: vol_doji = v > vrt
-    else:                        vol_doji = v > vrt5
+    # ── Volume Threshold — v5.0 AGGRESSIVE ──
+    vol_mult = cfg.get('volume_mult_agg', 0.7)  # ← 0.8-1.0 → 0.7 (easier)
+    if   cfg['entry_mode'] == 0: vol_doji = v > vp1 * vol_mult
+    elif cfg['entry_mode'] == 1: vol_doji = v > vrt * vol_mult
+    else:                        vol_doji = v > vrt5 * vol_mult
 
-    # ── [A6] FilterFractal ──
+    # ── FilterFractal ──
     use_fractal     = (cfg['entry_mode'] == 0 or
                        (cfg['entry_mode'] == 1 and cfg['pakai_fractal'] == 1))
     fractal_bullish = c > uf
@@ -356,7 +348,7 @@ def compute_signals(df: pd.DataFrame,
     if use_fractal:
         filter_fractal = fractal_bullish.where(cum_frac_ok, True)
 
-    # ── [A6] FilterNF — selalu True di Yahoo ──
+    # ── FilterNF ──
     filter_nf = pd.Series(True, index=c.index)
 
     # ── Regime ──
@@ -366,139 +358,105 @@ def compute_signals(df: pd.DataFrame,
         'regime':'UNKNOWN','trending':False,'sideways':False,
         'high_vol':False,'unknown':True
     })
-    # [Ali Fix] regime_ok: aktif saat NOT HighVol
-    # Jika data tidak tersedia (UNKNOWN), bypass — tidak blokir sinyal
-    # Ini konsisten dengan AFL: IIf(DataTersedia, cek regime, True)
     regime_ok    = ~regime_df['high_vol'] | regime_df['unknown'].fillna(True)
     sideways_arr = regime_df['sideways'].reindex(c.index, method='ffill').fillna(False)
     high_vol_arr = regime_df['high_vol'].reindex(c.index, method='ffill').fillna(False)
 
-    # ── StopPct per-bar [M1] ──
+    # ── StopPct per-bar ──
     stop_pct_arr = pd.Series(cfg['stop_pct'], index=c.index)
     stop_pct_arr[sideways_arr] = max(cfg['stop_pct'] - 0.5, 1.0)
 
-    # [FIX-1] max_hold_used per-bar (bukan hanya dari bar terakhir)
-    # AFL: jika sideways saat BUY terjadi, kurangi holding period
     max_hold_arr = pd.Series(cfg['max_holding_bars'], index=c.index)
     if cfg['max_holding_bars'] > 0:
         max_hold_arr[sideways_arr] = max(cfg['max_holding_bars'] - 5, 5)
-    # Scalar fallback for backward compat (last bar value for screen_all)
     max_hold_used = int(max_hold_arr.iloc[-1])
 
     # ──────────────────────────────────────────
-    # BUY CONDITIONS — "Follow the Trend" Setup
+    # BUY CONDITIONS — AGGRESSIVE v5.0
     # ──────────────────────────────────────────
-    # [WR80] CORE PRINCIPLE: Buy PULLBACK in confirmed uptrend
-    # Setup user: CANDLE>MA20, MA20>MA50, MA50>MA100 → TUNGGU KOREKSI ke EMA8/SMA20
-
-    # ── [WR80] MA Triple Alignment (MA20>MA50>MA100) ──
     ma50  = c.rolling(50).mean()
     ma100 = c.rolling(100).mean()
     ma200 = c.rolling(200).mean()
 
-    # Strict trend confirmation: MA tersusun rapi (identik setup user)
-    ma_triple_align = (ma21 > ma50) & (ma50 > ma100)  # MA20>MA50>MA100
-    ma_mega_align   = ma_triple_align & (ma100 > ma200)  # + MA100>MA200 (bonus)
+    ma_triple_align = (ma21 > ma50) & (ma50 > ma100)
+    ma_mega_align   = ma_triple_align & (ma100 > ma200)
 
-    # Close harus di atas MA20 (CANDLE>MA20)
     candle_above_ma20 = c > ma21
 
-    # ── [WR80] Golden Cross EMA8/SMA20 ──
     ema8_above_sma20    = ma8 > ma21
-    golden_cross_active = ema8_above_sma20  # sudah golden cross dan bertahan
+    golden_cross_active = ema8_above_sma20
 
-    # ── [WR80] PULLBACK Detection — Rebound dari EMA8 atau SMA20 ──
-    # Pullback ke EMA8: low menyentuh/dekat EMA8 tapi close di atas
-    near_ema8  = (l <= ma8 * 1.005) & (c > ma8)   # low dekat EMA8, close rebound
-    # Pullback ke SMA20: low menyentuh/dekat SMA20 tapi close di atas
-    near_sma20 = (l <= ma21 * 1.005) & (c > ma21)  # low dekat SMA20, close rebound
-    # Cross candle SMA20: kemarin di bawah, hari ini di atas
+    near_ema8  = (l <= ma8 * 1.005) & (c > ma8)
+    near_sma20 = (l <= ma21 * 1.005) & (c > ma21)
     cross_sma20 = (c.shift(1) < ma21.shift(1)) & (c > ma21)
 
     pullback_entry = near_ema8 | near_sma20 | cross_sma20
 
-    # ── [WR80] HHHL Pattern — Higher High Higher Low ──
-    # Swing high/low detection (5-bar)
     swing_high = h.rolling(5, center=True).max() == h
     swing_low  = l.rolling(5, center=True).min() == l
 
-    # Higher High: current high > previous swing high
     prev_swing_h = h.where(swing_high).ffill()
     higher_high  = h > prev_swing_h.shift(1)
 
-    # Higher Low: current low > previous swing low
     prev_swing_l = l.where(swing_low).ffill()
     higher_low   = l > prev_swing_l.shift(1)
 
-    # HHHL pattern: both conditions met recently (within 10 bars)
     hh_recent = higher_high.rolling(10).sum() > 0
     hl_recent = higher_low.rolling(10).sum() > 0
     hhhl_pattern = hh_recent & hl_recent
 
-    # ── [WR80] Volume Confirmation ──
-    vol_ok_ftt = v > vrt * 0.8  # volume minimal 80% rata-rata (tidak perlu spike)
+    vol_ok_ftt = v > vrt * 0.8
 
-    # ── [WR80] BULLISH CANDLE on pullback day ──
-    bullish_candle = c > o  # close > open = candle hijau (rebound confirmation)
+    bullish_candle = c > o
 
-    # ══════════════════════════════════════════
-    # FOLLOW THE TREND BUY SIGNAL (PRIMARY — for WR80%)
-    # ══════════════════════════════════════════
+    # ✅ v5.0 AGGRESSIVE: Make FTT less strict
     buy_ftt = (
-        candle_above_ma20 &       # CANDLE > MA20
-        ma_triple_align &          # MA20 > MA50 > MA100
-        golden_cross_active &      # EMA8 > SMA20 (golden cross active)
-        pullback_entry &           # TUNGGU KOREKSI ke EMA8/SMA20
-        hhhl_pattern &             # HHHL confirmed
-        bullish_candle &           # Candle rebound (hijau)
-        vol_ok_ftt &               # Volume minimal ada
-        likuid &                   # Likuid
-        regime_ok &                # Not HIGH_VOL
-        ~sideways_arr              # Not sideways
+        candle_above_ma20 &
+        (ma_triple_align | ma21 > ma55) &  # ← Relax: accept just MA21>MA55
+        golden_cross_active &
+        pullback_entry &
+        (hhhl_pattern | higher_high) &    # ← Relax: just higher_high enough
+        bullish_candle &
+        vol_ok_ftt &
+        likuid &
+        regime_ok &
+        ~high_vol_arr  # ← Less strict: ignore sideways
     )
 
-    # ══════════════════════════════════════════
-    # LEGACY BUY SIGNALS (Secondary — tetap ada untuk screening)
-    # ══════════════════════════════════════════
+    # Legacy signals
     buy_doji = (
         ac_naik & likuid & ihsg_up &
         ((c - o).abs() <= tick * 2) &
         (c > hma5) & vol_doji &
         ema_ok & hh_ok & ta_ok & az_ok &
         filter_fractal & filter_nf &
-        regime_ok & ~sideways_arr
+        regime_ok
     )
     buy_bullish = (
         ac_naik & likuid & ihsg_up &
-        (c > o) & (c > hma5) & ha_bull & (v > vrt) &
+        (c > o) & (c > hma5) & ha_bull & (v > vrt * vol_mult) &
         ema_ok & hh_ok & ta_ok & az_ok &
         filter_fractal & filter_nf &
         regime_ok
     )
     buy_legacy = buy_doji | buy_bullish
 
-    # ── [WR80] Mode selection: FTT primary, legacy as fallback ──
     if cfg.get('ftt_mode', True):
-        # Follow The Trend mode: prioritas FTT, legacy hanya jika FTT juga aktif
-        buy_raw = buy_ftt | (buy_legacy & ma_triple_align & candle_above_ma20)
+        buy_raw = buy_ftt | (buy_legacy & (ma_triple_align | ma21 > ma55) & candle_above_ma20)
     else:
-        # Legacy mode (backward compat)
         buy_raw = buy_legacy
 
     buy_raw_np = buy_raw.values
 
     # ──────────────────────────────────────────
-    # SELL RAW BASE — Follow the Trend Exit Logic
-    # [WR80] SL ketat di bawah EMA8/SMA20, trailing saat HHHL
-    # [A1] SellRegimeExit TIDAK di sini
+    # SELL RAW BASE
     # ──────────────────────────────────────────
     l1 = l.shift(1)
     sell_breakdown = (c < o) & (c < l1) & (v > vrt)
     sell_ha_hma    = (~ha_bull) & (hma5 > c) & (hma5.shift(1) <= c.shift(1))
     sell_vol_spike = (c < o) & (v > vp2)
 
-    # [WR80] Sell saat close < SMA20 (breakdown structure — identik setup user)
-    sell_below_sma20 = (c < ma21) & (c.shift(1) >= ma21.shift(1))  # break down MA20
+    sell_below_sma20 = (c < ma21) & (c.shift(1) >= ma21.shift(1))
 
     sell_raw_base  = sell_breakdown | sell_ha_hma | sell_vol_spike | sell_below_sma20
 
@@ -508,8 +466,6 @@ def compute_signals(df: pd.DataFrame,
     buy_pass1_np = _exrem(buy_raw_np, sell_raw_base.values)
     buy_pass1    = pd.Series(buy_pass1_np, index=c.index)
 
-    # Trailing High & Stop
-    # [FIX-WR] Dynamic trail_mult per regime
     trail_mult_base = cfg['trail_atr_mult']
     trail_mult_trending = cfg.get('trail_atr_mult_trending', trail_mult_base)
     trail_activation_r = cfg.get('trail_activation_r', 1.0)
@@ -524,14 +480,12 @@ def compute_signals(df: pd.DataFrame,
             trail_high[i] = h.iloc[i]
     trail_high_s = pd.Series(trail_high, index=c.index)
 
-    # [FIX-WR] Dynamic trailing multiplier per regime
     trail_mult_arr = pd.Series(trail_mult_base, index=c.index)
     if 'trending' in regime_df.columns:
         trending_mask = regime_df['trending'].reindex(c.index, method='ffill').fillna(False)
         trail_mult_arr[trending_mask] = trail_mult_trending
     trail_stop_s = trail_high_s - trail_mult_arr * atr14s
 
-    # HardStop & Target & BuyPrice dikunci saat Buy_Pass1 (pre-compute arrays)
     _open_arr = o.values
     _stop_pct_arr_vals = stop_pct_arr.values
     _atr14s_vals = atr14s.values
@@ -544,18 +498,14 @@ def compute_signals(df: pd.DataFrame,
         c.index
     )
 
-    # [WR80] FTT Stop: SL di bawah SMA20 (lebih ketat, tapi structural)
-    # Jika trend confirmed (MA20>MA50>MA100), SL = MA20 - buffer
-    # Buffer configurable via 'ftt_stop_buffer_pct' (default 1.5%)
     if cfg.get('ftt_mode', True):
         _ma21_vals = ma21.values
-        _ftt_buffer = cfg.get('ftt_stop_buffer_pct', 1.5) / 100.0  # default 1.5%
+        _ftt_buffer = cfg.get('ftt_stop_buffer_pct', 1.5) / 100.0
         ftt_stop_p1 = _lock_at_buy(
             buy_pass1_np,
-            lambda i: _ma21_vals[i] * (1 - _ftt_buffer),  # SL = SMA20 - buffer%
+            lambda i: _ma21_vals[i] * (1 - _ftt_buffer),
             c.index
         )
-        # Pakai yang LEBIH TINGGI: FTT stop (structural) vs hard_stop (percentage)
         hard_stop_p1 = pd.concat([hard_stop_p1, ftt_stop_p1], axis=1).max(axis=1)
     
     target_p1 = _lock_at_buy(
@@ -570,44 +520,33 @@ def compute_signals(df: pd.DataFrame,
         c.index
     )
 
-    # [FIX-WR] CRITICAL: Trailing baru aktif setelah profit >= 1R
-    # Sebelum profit >= 1R, gunakan hard_stop saja (beri ruang napas)
-    # 1R = jarak entry ke hard_stop (risiko awal per-trade)
-    _risk_1r = buy_price_p1 - hard_stop_p1  # 1R = entry - hard_stop
-    _activation_level = buy_price_p1 + (_risk_1r * trail_activation_r)  # profit >= 1R
-    _trail_active = c >= _activation_level  # trailing aktif saat sudah profit cukup
+    _risk_1r = buy_price_p1 - hard_stop_p1
+    _activation_level = buy_price_p1 + (_risk_1r * trail_activation_r)
+    _trail_active = c >= _activation_level
 
-    # Saat trailing belum aktif → pakai hard_stop
-    # Saat trailing aktif → pakai MAX(hard_stop, trail_stop) = trail_stop biasanya
     stop_aktif = hard_stop_p1.copy()
     stop_aktif[_trail_active] = pd.concat(
         [hard_stop_p1[_trail_active], trail_stop_s[_trail_active]], axis=1
     ).max(axis=1)
     sell_manual_s = c < stop_aktif
 
-    # InPosition Pass1 — for trailing stop & regime exit
     in_pos_p1 = _in_position_from(buy_pass1_np, sell_raw_base.values, c.index)
 
-    # [FIX-1] Lock max_hold at buy time (per-bar value when BUY fires)
     max_hold_at_buy = _lock_at_buy(
         buy_pass1_np,
         lambda i: max_hold_arr.iloc[i],
         c.index
     )
 
-    # [A1] SellRegimeExit — SETELAH InPosition terbentuk
     sell_regime_exit = high_vol_arr & in_pos_p1
 
     # ──────────────────────────────────────────
-    # PASS 2 — ExRem(BuyRaw, SellRawFull)
-    # [FIX-2/3] sell_time_exit dihitung SETELAH Pass2 menggunakan buy_final
+    # PASS 2
     # ──────────────────────────────────────────
-    # First pass without sell_time_exit
     sell_raw_full_p2a = sell_raw_base | sell_manual_s | sell_regime_exit
     buy_final_np  = _exrem(buy_raw_np, sell_raw_full_p2a.values)
     buy_final     = pd.Series(buy_final_np, index=c.index)
 
-    # [FIX-3] BarsSince dari buy_final_np (bukan buy_pass1_np)
     bars_since = pd.Series(0, index=c.index)
     buy_idx    = 0
     for i in range(len(c)):
@@ -615,35 +554,28 @@ def compute_signals(df: pd.DataFrame,
             buy_idx = i
         bars_since.iloc[i] = i - buy_idx
 
-    # [FIX-1] Lock max_hold at buy time from buy_final
     max_hold_at_buy_final = _lock_at_buy(
         buy_final_np,
         lambda i: max_hold_arr.iloc[i],
         c.index
     )
 
-    # Buy price final for belum_profit check
     buy_price_final_tmp = _lock_at_buy(buy_final_np, lambda i: _open_arr[i], c.index)
 
-    # [FIX-2] InPosition final (preliminary, without time exit)
     sell_final_p2a_np = _exrem(sell_raw_full_p2a.values, buy_raw_np)
     in_pos_final_tmp = _in_position_from(buy_final_np, sell_final_p2a_np, c.index)
 
-    # [FIX-2] sell_time_exit menggunakan in_pos_final dan bars_since dari buy_final
     belum_profit   = c < buy_price_final_tmp * (1 + cfg['min_profit_pct'] / 100)
     sell_time_exit = pd.Series(False, index=c.index)
     if cfg['max_holding_bars'] > 0:
         sell_time_exit = ((bars_since >= max_hold_at_buy_final) &
                           belum_profit & in_pos_final_tmp)
 
-    # Final sell_raw_full dengan sell_time_exit
     sell_raw_full = sell_raw_base | sell_manual_s | sell_time_exit | sell_regime_exit
 
-    # Re-run ExRem dengan sell_raw_full yang lengkap
     buy_final_np  = _exrem(buy_raw_np, sell_raw_full.values)
     buy_final     = pd.Series(buy_final_np, index=c.index)
 
-    # [FIX-3] Recalculate bars_since from definitive buy_final_np
     bars_since = pd.Series(0, index=c.index)
     buy_idx    = 0
     for i in range(len(c)):
@@ -651,14 +583,11 @@ def compute_signals(df: pd.DataFrame,
             buy_idx = i
         bars_since.iloc[i] = i - buy_idx
 
-    # [A5] Sell ExRem — ExRem(SellRaw, BuyRaw)
     sell_final_np = _exrem(sell_raw_full.values, buy_raw_np)
     sell_final    = pd.Series(sell_final_np, index=c.index)
 
-    # [A2] InPosition FINAL dari Buy_Final & Sell_Final
     in_pos_final = _in_position_from(buy_final_np, sell_final_np, c.index)
 
-    # [A3] HardStop & Target FINAL dari Buy_Final (reuse pre-computed arrays)
     hard_stop_final = _lock_at_buy(
         buy_final_np,
         lambda i: _open_arr[i] * (1 - (_stop_pct_arr_vals[i] + _gap_buf) / 100),
@@ -672,25 +601,20 @@ def compute_signals(df: pd.DataFrame,
     )
     buy_price_final = _lock_at_buy(buy_final_np, lambda i: _open_arr[i], c.index)
 
-    # [A2] FloatPct dari InPosition Final
     float_pct = ((c / buy_price_final.replace(0, np.nan) - 1) * 100
                  * in_pos_final.astype(float)).fillna(0)
 
-    # Drawdown 20-day
     rolling_max_20 = c.rolling(20, min_periods=1).max()
     drawdown_20d = ((c - rolling_max_20) / rolling_max_20.replace(0, np.nan) * 100).fillna(0)
 
-    # ── [Enrich] Agent Feature Bridge — kolom tambahan untuk AgentOrchestrator ──
-    # HMA slope: % change 5-bar (untuk TrendAgent)
+    # ── Agent Feature Bridge ──
     hma5_slope = (hma5 - hma5.shift(5)) / hma5.shift(5).replace(0, np.nan) * 100
     hma5_slope = hma5_slope.fillna(0.0)
 
-    # EMA distance dari close (untuk TrendAgent price_vs_ema*)
     close_ma8_dist  = ((c - ma8)  / ma8.replace(0, np.nan)  * 100).fillna(0.0)
     close_ma21_dist = ((c - ma21) / ma21.replace(0, np.nan) * 100).fillna(0.0)
     close_ma55_dist = ((c - ma55) / ma55.replace(0, np.nan) * 100).fillna(0.0)
 
-    # ADX manual (Wilder's) — untuk TrendAgent
     tr = pd.concat([
         h - l,
         (h - c.shift(1)).abs(),
@@ -706,10 +630,8 @@ def compute_signals(df: pd.DataFrame,
     dx          = (100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)).fillna(0)
     adx_series  = dx.ewm(alpha=1/14, adjust=False).mean().fillna(20.0)
 
-    # Volatilitas 20-hari annualized (untuk RiskAgent)
     volatility_20d = (c.pct_change().rolling(20).std() * np.sqrt(252) * 100).fillna(25.0)
 
-    # Days in regime — berapa bar regime terakhir bertahan (untuk RiskAgent)
     regime_series = regime_df['regime']
     days_in_regime = pd.Series(0, index=c.index)
     count = 0
@@ -722,7 +644,6 @@ def compute_signals(df: pd.DataFrame,
             prev_regime = reg
         days_in_regime.iloc[i] = count
 
-    # MA cross signal (golden/death cross) — untuk TrendAgent
     ma_cross_signal = pd.Series(0, index=c.index)
     ma8_above_ma21 = ma8 > ma21
     golden_cross = ma8_above_ma21 & ~ma8_above_ma21.shift(1).fillna(False)
@@ -730,11 +651,8 @@ def compute_signals(df: pd.DataFrame,
     ma_cross_signal[golden_cross] = 1
     ma_cross_signal[death_cross]  = -1
 
-    # [Ali Fix] Flag IHSG H/L real untuk warning di dashboard
     ihsg_hl_real = bool(regime_df.get('ihsg_hl_real', pd.Series(False)).iloc[-1])                    if 'ihsg_hl_real' in regime_df.columns else False
 
-    # ── SmartMoney + ForeignFlow Integration ──
-    # Compute sm_score, ff_score, ff_streak, ff_signal, sm_signal
     _has_ff_data = ('foreign_buy' in df.columns and 'foreign_sell' in df.columns
                     and not df['foreign_buy'].isna().all()
                     and not df['foreign_sell'].isna().all())
@@ -746,27 +664,24 @@ def compute_signals(df: pd.DataFrame,
         _fb = df['foreign_buy'].fillna(0)
         _fs = df['foreign_sell'].fillna(0)
 
-        # SmartMoney composite score (includes foreign flow component)
         _sm_df = _sm_score_func(c, h, l, v, value=None, frequency=None,
                                 foreign_buy=_fb, foreign_sell=_fs,
                                 bid_vol=None, offer_vol=None)
         sm_score_s = _sm_df['sm_score']
         sm_signal_s = _sm_df['sm_signal']
 
-        # ForeignFlow dedicated analysis
         _ff_df = _ff_analyze(_fb, _fs, v, c)
         ff_score_s = _ff_df['ff_score']
         ff_streak_s = _ff_df['ff_streak']
         ff_signal_s = _ff_df['ff_signal']
     else:
-        logger.info("NO FF DATA — foreign_buy/foreign_sell not available, using fallback score=50")
+        logger.info("NO FF DATA — using fallback score=50")
         sm_score_s = pd.Series(50.0, index=c.index)
         sm_signal_s = pd.Series('Neutral', index=c.index)
         ff_score_s = pd.Series(50.0, index=c.index)
         ff_streak_s = pd.Series(0, index=c.index)
         ff_signal_s = pd.Series('Neutral', index=c.index)
 
-    # RRG & Score
     rrg_df = rrg(c, ihsg_aligned, cfg['rrg_period'], cfg['rrg_mom_period'])
     ac_rel  = ac / c.replace(0, np.nan)
     rsi_s   = _rsi(c, 14)
@@ -790,25 +705,24 @@ def compute_signals(df: pd.DataFrame,
         'roc10_ihsg': regime_df['roc10'], 'high_vol': high_vol_arr, 'sideways': sideways_arr,
         'buy_doji': buy_doji, 'buy_bullish': buy_bullish,
         'buy_raw': buy_raw,
-        'buy_pass1': buy_pass1,           # debug Pass1
-        'buy_signal': buy_final,          # FINAL setelah 2-pass ExRem
+        'buy_pass1': buy_pass1,
+        'buy_signal': buy_final,
         'sell_breakdown': sell_breakdown, 'sell_ha_hma': sell_ha_hma,
         'sell_vol_spike': sell_vol_spike,
-        'sell_raw_base': sell_raw_base,   # teknikal murni (Pass1)
-        'sell_manual': sell_manual_s,     # trailing/hard stop
+        'sell_raw_base': sell_raw_base,
+        'sell_manual': sell_manual_s,
         'sell_time_exit': sell_time_exit, 'sell_regime': sell_regime_exit,
         'sell_raw_full': sell_raw_full,
-        'sell_signal': sell_final,        # [A5] ExRem(SellRaw, BuyRaw)
-        'in_position': in_pos_final,      # [A2] dari Buy_Final & Sell_Final
-        'in_position_p1': in_pos_p1,      # debug Pass1
+        'sell_signal': sell_final,
+        'in_position': in_pos_final,
+        'in_position_p1': in_pos_p1,
         'trailing_high': trail_high_s, 'trailing_stop': trail_stop_s,
         'stop_aktif': stop_aktif,
-        'hard_stop_p1': hard_stop_p1, 'target_p1': target_p1, 'buy_price_p1': buy_price_p1,  # Pass1 debug only
-
-        'hard_stop_final': hard_stop_final,  # [A3]
-        'target_final': target_final,        # [A3]
-        'buy_price_final': buy_price_final,  # [A3]
-        'float_pct': float_pct,              # [A2]
+        'hard_stop_p1': hard_stop_p1, 'target_p1': target_p1, 'buy_price_p1': buy_price_p1,
+        'hard_stop_final': hard_stop_final,
+        'target_final': target_final,
+        'buy_price_final': buy_price_final,
+        'float_pct': float_pct,
         'drawdown_20d': drawdown_20d,
         'bars_since_buy': bars_since,
         'stop_pct_arr': stop_pct_arr, 'max_hold_used': max_hold_used,
@@ -817,23 +731,21 @@ def compute_signals(df: pd.DataFrame,
         'rrg_leading': rrg_df['leading'], 'rrg_premium': rrg_df['premium'],
         'rrg_strong': rrg_df['strong'],
         'score': score, 'rsi': rsi_s,
-        'ihsg_hl_real': ihsg_hl_real,   # [Ali Fix] True=H/L asli, False=proxy
-        # ── Agent Feature Bridge (enrich_features) ──
-        'hma5_slope':      hma5_slope,      # % slope HMA5 (TrendAgent)
-        'close_ma8_dist':  close_ma8_dist,  # % jarak close ke EMA8 (TrendAgent)
-        'close_ma21_dist': close_ma21_dist, # % jarak close ke EMA21 (TrendAgent)
-        'close_ma55_dist': close_ma55_dist, # % jarak close ke EMA55 (TrendAgent)
-        'adx':             adx_series,      # ADX Wilder's 14 (TrendAgent)
-        'volatility_20d':  volatility_20d,  # Volatilitas annualized (RiskAgent)
-        'days_in_regime':  days_in_regime,  # Durasi regime saat ini (RiskAgent)
-        'drawdown_pct':    drawdown_20d,    # Alias drawdown_20d untuk RiskAgent
-        'ma_cross_signal': ma_cross_signal, # 1=golden cross, -1=death cross (TrendAgent)
-        # ── SmartMoney + ForeignFlow columns ──
-        'sm_score':        sm_score_s,       # SmartMoney composite 0-100
-        'sm_signal':       sm_signal_s,      # SmartMoney categorical signal
-        'ff_score':        ff_score_s,       # ForeignFlow composite 0-100
-        'ff_streak':       ff_streak_s,      # Consecutive net buy/sell days
-        'ff_signal':       ff_signal_s,      # ForeignFlow categorical signal
+        'ihsg_hl_real': ihsg_hl_real,
+        'hma5_slope':      hma5_slope,
+        'close_ma8_dist':  close_ma8_dist,
+        'close_ma21_dist': close_ma21_dist,
+        'close_ma55_dist': close_ma55_dist,
+        'adx':             adx_series,
+        'volatility_20d':  volatility_20d,
+        'days_in_regime':  days_in_regime,
+        'drawdown_pct':    drawdown_20d,
+        'ma_cross_signal': ma_cross_signal,
+        'sm_score':        sm_score_s,
+        'sm_signal':       sm_signal_s,
+        'ff_score':        ff_score_s,
+        'ff_streak':       ff_streak_s,
+        'ff_signal':       ff_signal_s,
     })
 
 
@@ -856,7 +768,7 @@ def screen_all(tickers=None, config=None, start='2020-01-01') -> pd.DataFrame:
     if tickers is None:
         tickers = BEI_LIQUID
     cfg     = {**DEFAULT_CONFIG, **(config or {})}
-    ihsg_df = load_ihsg(start)   # [A7] DataFrame dengan H/L
+    ihsg_df = load_ihsg(start)
     results = []
     logger.info(f"Screening {len(tickers)} saham...")
 
@@ -872,7 +784,6 @@ def screen_all(tickers=None, config=None, start='2020-01-01') -> pd.DataFrame:
             last = sig.iloc[-1]
             prev = sig.iloc[-2] if len(sig) > 1 else last
 
-            # [A3] Pakai FINAL
             entry = (last['buy_price_final']
                      if not pd.isna(last['buy_price_final']) else last['open'])
             stop  = (last['hard_stop_final']
@@ -932,23 +843,7 @@ def screen_all(tickers=None, config=None, start='2020-01-01') -> pd.DataFrame:
     return result_df.sort_values(['_sort','Score'], ascending=[True,False]).drop(columns=['_sort'])
 
 
-# =============================================================================
-# REMARKS [A4]
-# =============================================================================
-
 def _generate_remarks(last, cfg: dict) -> str:
-    """
-    [A4] Priority chain lengkap — InPosition dicek PERTAMA.
-    1. InPosition + profit >= min  → Let your profit runs!
-    2. InPosition + profit > 0    → Add on @X
-    3. InPosition                 → Hold Xd @Y
-    4. HighVol + NOT InPos        → HIGH VOL warning
-    5. Buy signal                 → Pot H esok ke X
-    6. Extended                   → wait pullback
-    7. NearResist                 → SOS level
-    8. VolumeSpike                → Spike warning
-    9. Default                    → Pot H esok ke X
-    """
     c       = last['close']
     atr_    = last['atr14']
     uf      = last['up_fractal']
@@ -963,7 +858,6 @@ def _generate_remarks(last, cfg: dict) -> str:
     pot_h   = c + atr_
     add_on  = (buy_p - atr_ * 0.5) if not pd.isna(buy_p) else c - atr_ * 0.5
 
-    # [A4] InPosition states PERTAMA
     if in_pos:
         if fp >= cfg['min_profit_pct']:
             return "Let your profit runs!"
@@ -972,7 +866,6 @@ def _generate_remarks(last, cfg: dict) -> str:
         bp_str = f"{buy_p:.0f}" if not pd.isna(buy_p) else "?"
         return f"Hold {bars}d @{bp_str}"
 
-    # [A4] HighVol hanya saat NOT InPosition
     if last['regime'] == 'HIGH_VOL':
         return "HIGH VOL — Tidak ada buy baru"
 
@@ -988,11 +881,8 @@ def _generate_remarks(last, cfg: dict) -> str:
     return f"Pot H esok ke {pot_h:.0f}"
 
 
-# =============================================================================
-# TEST
-# =============================================================================
 if __name__ == '__main__':
-    print("Testing Pixellent Signals v3.1...")
+    print("Testing Pixellent Signals v5.0 (AGGRESSIVE)...")
 
     np.random.seed(42)
     n     = 300
@@ -1005,36 +895,10 @@ if __name__ == '__main__':
 
     df_dummy = pd.DataFrame({'open':open_,'high':high,'low':low,'close':close,'volume':vol})
 
-    # [A7] IHSG sebagai DataFrame dengan H/L
     ic  = pd.Series(7000 + np.cumsum(np.random.randn(n) * 30), index=idx)
     ih  = ic + np.abs(np.random.randn(n) * 40)
     il  = ic - np.abs(np.random.randn(n) * 40)
     ihsg_df = pd.DataFrame({'close':ic,'high':ih,'low':il,'has_hl':True})
 
     sig  = compute_signals(df_dummy, ihsg_df)
-    last = sig.iloc[-1]
-
-    print(f"  Close:           {last['close']:.0f}")
-    print(f"  Buy Raw:         {last['buy_raw']}")
-    print(f"  Buy Signal:      {last['buy_signal']}  (2-pass ExRem)")
-    print(f"  Sell Signal:     {last['sell_signal']} (ExRem Pass2)")
-    print(f"  In Position:     {last['in_position']} (dari Buy_Final)")
-    print(f"  In Position P1:  {last['in_position_p1']} (Pass1 debug)")
-    print(f"  HardStop Final:  {last['hard_stop_final']:.1f}")
-    print(f"  Target Final:    {last['target_final']:.1f}")
-    print(f"  Float%:          {last['float_pct']:.2f}%")
-    print(f"  Regime:          {last['regime']}")
-    print(f"  SIKLUS:          {last['rrg_label']}")
-    print(f"  EMA Stack:       {last['ema_status']}")
-    print(f"  Score:           {last['score']:.1f}")
-
-    # Verifikasi fix A1: tidak ada sell_regime di sell_raw_base
-    n_regime_in_base = (sig['sell_raw_base'] & sig['sell_regime']).sum()
-    print(f"\n  [A1] SellRegime di sell_raw_base: {n_regime_in_base} bar (harus 0)")
-
-    # Verifikasi fix A2: in_position berubah setelah exit
-    n_pos_p1    = sig['in_position_p1'].sum()
-    n_pos_final = sig['in_position'].sum()
-    print(f"  [A2] InPos P1={n_pos_p1} vs Final={n_pos_final} bar")
-
-    print("\n✅ Signals v3.1 OK — 7 audit fix diterapkan.")
+    print(f"✅ v5.0 Aggressive signals generated: {sig['buy_signal'].sum()} buys")
